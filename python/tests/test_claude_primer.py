@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for super_claude.py
+Tests for claude_primer.py
 
 Regression suite + golden output tests.
 Run: python3 -m pytest tests/ -v
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).parent.parent / "super_claude.py"
+SCRIPT = Path(__file__).parent.parent / "claude_primer.py"
 
 
 def run_setup(*args, cwd=None, timeout=30):
@@ -581,7 +581,7 @@ class TestVerification:
         """Generated files should reference v1.2."""
         run_setup(str(empty_dir), "--yes", "--no-git-check")
         content = (empty_dir / "CLAUDE.md").read_text()
-        assert "super-claude v1.2" in content
+        assert "claude-primer v1.2" in content
 
 
 # ─────────────────────────────────────────────
@@ -592,7 +592,7 @@ class TestPureFunctions:
     """Unit tests for pure helper functions."""
 
     def test_extract_md_sections_basic(self):
-        from super_claude import extract_md_sections
+        from claude_primer import extract_md_sections
         content = "# Title\nIntro\n## Section A\nBody A\n## Section B\nBody B"
         sections = extract_md_sections(content)
         assert "Title" in sections
@@ -602,14 +602,14 @@ class TestPureFunctions:
         assert "Body A" in sections["Title > Section A"]
 
     def test_extract_md_sections_nested(self):
-        from super_claude import extract_md_sections
+        from claude_primer import extract_md_sections
         content = "## Parent\n### Child\nNested body"
         sections = extract_md_sections(content)
         assert "Parent > Child" in sections
         assert "Nested body" in sections["Parent > Child"]
 
     def test_extract_md_sections_code_block(self):
-        from super_claude import extract_md_sections
+        from claude_primer import extract_md_sections
         content = "## Real\nBody\n```\n## Not a heading\n```\n## Another\nMore"
         sections = extract_md_sections(content)
         assert "Real" in sections
@@ -617,17 +617,17 @@ class TestPureFunctions:
         assert "Not a heading" not in sections
 
     def test_detect_project_tier_empty(self):
-        from super_claude import detect_project_tier
+        from claude_primer import detect_project_tier
         result = detect_project_tier({"stacks": [], "frameworks": [], "deploy": [], "is_empty": True, "is_monorepo": False})
         assert result["tier"] == 4
 
     def test_detect_project_tier_python(self):
-        from super_claude import detect_project_tier
+        from claude_primer import detect_project_tier
         result = detect_project_tier({"stacks": ["python"], "frameworks": [], "deploy": [], "is_empty": False, "is_monorepo": False})
         assert result["tier"] == 3
 
     def test_detect_project_tier_t1(self):
-        from super_claude import detect_project_tier
+        from claude_primer import detect_project_tier
         result = detect_project_tier({
             "stacks": ["node"], "frameworks": ["nextjs"],
             "deploy": ["vercel"], "is_empty": False, "is_monorepo": True
@@ -635,12 +635,12 @@ class TestPureFunctions:
         assert result["tier"] == 1
 
     def test_load_rc_missing_file(self, tmp_path):
-        from super_claude import load_rc
+        from claude_primer import load_rc
         result = load_rc(tmp_path)
         assert result == {}
 
     def test_save_load_rc_roundtrip(self, tmp_path):
-        from super_claude import save_rc, load_rc
+        from claude_primer import save_rc, load_rc
         info = {
             "description": "Test project",
             "stacks": ["python", "node"],
@@ -659,14 +659,14 @@ class TestPureFunctions:
         assert loaded["monorepo_tool"] == "turborepo"
 
     def test_verify_generated_catches_empty(self, tmp_path):
-        from super_claude import _verify_generated, FileAction
+        from claude_primer import _verify_generated, FileAction
         (tmp_path / "CLAUDE.md").write_text("")
         actions = [FileAction("CLAUDE.md", "create")]
         issues = _verify_generated(tmp_path, actions)
         assert any("empty" in i for i in issues)
 
     def test_verify_generated_catches_missing_heading(self, tmp_path):
-        from super_claude import _verify_generated, FileAction
+        from claude_primer import _verify_generated, FileAction
         (tmp_path / "test.md").write_text("No heading here, just text.")
         actions = [FileAction("test.md", "create")]
         issues = _verify_generated(tmp_path, actions)
@@ -794,6 +794,31 @@ class TestRalphIntegration:
         assert "Write,Read,Edit" in content
         assert "Bash(git *)" in content
 
+    def test_ralph_clean_root_prompt_references_docs_dir(self, empty_dir):
+        """With --clean-root, PROMPT.md should point to .claude/docs/ files."""
+        run_setup(str(empty_dir), "--yes", "--no-git-check", "--with-ralph", "--clean-root")
+        content = (empty_dir / ".ralph" / "PROMPT.md").read_text()
+        assert "../.claude/docs/QUICKSTART.md" in content
+        assert "../.claude/docs/STANDARDS.md" in content
+        assert "../.claude/docs/ERRORS_AND_LESSONS.md" in content
+
+    def test_ralph_clean_root_agent_symlink_points_docs_dir(self, empty_dir):
+        """With --clean-root, AGENT.md should link to the relocated QUICKSTART.md."""
+        run_setup(str(empty_dir), "--yes", "--no-git-check", "--with-ralph", "--clean-root")
+        agent = empty_dir / ".ralph" / "AGENT.md"
+        assert agent.is_symlink()
+        assert agent.resolve() == (empty_dir / ".claude" / "docs" / "QUICKSTART.md").resolve()
+
+    def test_ralph_first_run_reports_create_actions(self, empty_dir):
+        """First Ralph run should report newly created files as CREATE."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--with-ralph")
+        assert r.returncode == 0
+        assert "CREATE               .ralph/PROMPT.md" in r.stdout
+        assert "CREATE               .ralph/fix_plan.md" in r.stdout
+        assert "CREATE               .ralphrc" in r.stdout
+        assert "OVERWRITE            .ralph/PROMPT.md" not in r.stdout
+        assert "SKIP                 .ralph/fix_plan.md" not in r.stdout
+
 
 # ─────────────────────────────────────────────
 # --from-doc flag
@@ -867,14 +892,14 @@ class TestCommandDedup:
     """Tests for dedup_and_rank_commands() pure function."""
 
     def test_dedup_removes_duplicates(self):
-        from super_claude import dedup_and_rank_commands
+        from claude_primer import dedup_and_rank_commands
         result = dedup_and_rank_commands(["pip install x", "pip install x", "pytest"])
         assert len(result) == 2
         assert "pip install x" in result
         assert "pytest" in result
 
     def test_dedup_removes_path_specific(self):
-        from super_claude import dedup_and_rank_commands
+        from claude_primer import dedup_and_rank_commands
         commands = [
             "pip install -r requirements.txt",
             "cd /Users/john/projects/myapp && npm install",
@@ -889,7 +914,7 @@ class TestCommandDedup:
         assert not any("/home/" in cmd for cmd in result)
 
     def test_dedup_ranking_order(self):
-        from super_claude import dedup_and_rank_commands
+        from claude_primer import dedup_and_rank_commands
         commands = [
             "npm run build",       # build (4)
             "pytest",              # test (2)
@@ -904,7 +929,7 @@ class TestCommandDedup:
         assert install_idx < test_idx < build_idx
 
     def test_dedup_preserves_valid_commands(self):
-        from super_claude import dedup_and_rank_commands
+        from claude_primer import dedup_and_rank_commands
         commands = [
             "pip install -r requirements.txt",
             "npm run dev",
@@ -918,7 +943,7 @@ class TestCommandDedup:
             assert cmd in result
 
     def test_dedup_empty_list(self):
-        from super_claude import dedup_and_rank_commands
+        from claude_primer import dedup_and_rank_commands
         result = dedup_and_rank_commands([])
         assert result == []
 
@@ -1051,6 +1076,15 @@ class TestCleanRoot:
         assert ".claude/docs/STANDARDS.md" in content
         assert ".claude/docs/ERRORS_AND_LESSONS.md" in content
 
+    def test_clean_root_readme_references_updated(self, empty_dir):
+        """README.md references should point to .claude/docs/ paths when generated."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root", "--with-readme")
+        assert r.returncode == 0
+        content = (empty_dir / "README.md").read_text()
+        assert ".claude/docs/QUICKSTART.md" in content
+        assert ".claude/docs/STANDARDS.md" in content
+        assert ".claude/docs/ERRORS_AND_LESSONS.md" in content
+
     def test_no_clean_root_default(self, empty_dir):
         """Without --clean-root, all files should be at root (default behavior)."""
         r = run_setup(str(empty_dir), "--yes", "--no-git-check")
@@ -1064,3 +1098,26 @@ class TestCleanRoot:
         r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root")
         assert r.returncode == 0
         assert (empty_dir / ".claude" / "docs").is_dir()
+
+    def test_clean_root_ralph_prompt_references(self, tmp_path):
+        """Ralph PROMPT.md should reference .claude/docs/ paths under --clean-root."""
+        (tmp_path / "requirements.txt").write_text("flask\n")
+        (tmp_path / "app.py").write_text("print('hi')\n")
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check", "--clean-root", "--with-ralph")
+        assert r.returncode == 0
+        content = (tmp_path / ".ralph" / "PROMPT.md").read_text()
+        assert ".claude/docs/STANDARDS.md" in content
+        assert ".claude/docs/ERRORS_AND_LESSONS.md" in content
+
+    def test_clean_root_ralph_agent_symlink_resolves(self, tmp_path):
+        """Ralph AGENT.md symlink should resolve to QUICKSTART.md in .claude/docs/."""
+        (tmp_path / "requirements.txt").write_text("flask\n")
+        (tmp_path / "app.py").write_text("print('hi')\n")
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check", "--clean-root", "--with-ralph")
+        assert r.returncode == 0
+        agent = tmp_path / ".ralph" / "AGENT.md"
+        assert agent.is_symlink(), "AGENT.md should be a symlink"
+        # Symlink should actually resolve to a real file
+        assert agent.exists(), f"AGENT.md symlink is broken (target: {agent.resolve()})"
+        content = agent.read_text()
+        assert "Quick Start" in content or "QUICKSTART" in content
