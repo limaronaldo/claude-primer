@@ -1,0 +1,2205 @@
+#!/usr/bin/env python3
+"""
+super-claude — Claude Code Knowledge Architecture Bootstrap (v3)
+
+Usage:
+    super-claude                             # current directory, interactive
+    super-claude /path/to/repo               # specific directory
+    super-claude --dry-run                   # preview without writing
+    super-claude --force                     # overwrite existing files
+    super-claude --yes                       # accept all defaults (no prompts)
+    super-claude --with-readme               # also generate README.md
+    super-claude --no-git-check              # skip git safety entirely
+    super-claude --plan-json                 # output project analysis as JSON
+
+Git safety modes (--git-mode):
+    ask          prompt before acting (default in interactive)
+    stash        auto-stash dirty changes, no prompt
+    skip         do nothing with git
+"""
+
+import os
+import re
+import sys
+import json
+import argparse
+import datetime
+import subprocess
+from pathlib import Path
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Optional
+
+# ─────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────
+
+IGNORE_DIRS = {
+    ".git", ".claude", "node_modules", "__pycache__", ".venv", "venv",
+    "env", ".env", "dist", "build", "out", ".next", ".nuxt", "target",
+    ".idea", ".vscode", ".mypy_cache", ".pytest_cache", "coverage",
+    ".tox", "egg-info", ".eggs", "htmlcov",
+}
+
+STACK_SIGNALS = {
+    "python": {
+        "files": ["requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "poetry.lock"],
+        "extensions": [".py"],
+    },
+    "node": {
+        "files": ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"],
+        "extensions": [".js", ".ts", ".jsx", ".tsx", ".mjs"],
+    },
+    "rust": {
+        "files": ["Cargo.toml", "Cargo.lock"],
+        "extensions": [".rs"],
+    },
+    "go": {
+        "files": ["go.mod", "go.sum"],
+        "extensions": [".go"],
+    },
+    "ruby": {
+        "files": ["Gemfile", "Gemfile.lock", "Rakefile"],
+        "extensions": [".rb"],
+    },
+    "java": {
+        "files": ["pom.xml", "build.gradle", "build.gradle.kts"],
+        "extensions": [".java", ".kt"],
+    },
+    "php": {
+        "files": ["composer.json", "composer.lock"],
+        "extensions": [".php"],
+    },
+    "dotnet": {
+        "files": [],
+        "extensions": [".cs", ".csproj", ".sln", ".fsproj"],
+    },
+    "elixir": {
+        "files": ["mix.exs", "mix.lock"],
+        "extensions": [".ex", ".exs"],
+    },
+    "swift": {
+        "files": ["Package.swift", "Package.resolved"],
+        "extensions": [".swift"],
+    },
+    "dart": {
+        "files": ["pubspec.yaml", "pubspec.lock"],
+        "extensions": [".dart"],
+    },
+    "zig": {
+        "files": ["build.zig", "build.zig.zon"],
+        "extensions": [".zig"],
+    },
+    "scala": {
+        "files": ["build.sbt"],
+        "extensions": [".scala", ".sc"],
+    },
+}
+
+FRAMEWORK_SIGNALS = {
+    # Python
+    "django": ["manage.py", "django"],
+    "flask": ["flask"],
+    "fastapi": ["fastapi"],
+    "streamlit": ["streamlit"],
+    # Node/JS
+    "nextjs": ["next.config.js", "next.config.mjs", "next.config.ts"],
+    "react": ["react"],
+    "vue": ["vue", "nuxt.config"],
+    "svelte": ["svelte", "@sveltejs"],
+    "sveltekit": ["@sveltejs/kit"],
+    "solidjs": ["solid-js", "vite-plugin-solid"],
+    "remix": ["@remix-run"],
+    "astro": ["astro"],
+    "express": ["express"],
+    "nestjs": ["@nestjs"],
+    "hono": ["hono"],
+    # Rust
+    "axum": ["axum"],
+    "actix": ["actix-web"],
+    "rocket": ["rocket"],
+    # Go
+    "gin": ["github.com/gin-gonic/gin"],
+    "fiber": ["github.com/gofiber/fiber"],
+    "echo": ["github.com/labstack/echo"],
+    # Elixir
+    "phoenix": ["phoenix", "phoenix_html"],
+    # Java/Kotlin
+    "spring": ["org.springframework", "spring-boot"],
+    # PHP
+    "laravel": ["laravel/framework"],
+    # Dart
+    "flutter": ["flutter"],
+}
+
+DEPLOY_SIGNALS = {
+    "docker": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", ".dockerignore"],
+    "vercel": ["vercel.json", ".vercel"],
+    "render": ["render.yaml"],
+    "fly.io": ["fly.toml"],
+    "github_actions": [".github/workflows"],
+    "gitlab_ci": [".gitlab-ci.yml"],
+}
+
+# Monorepo workspace markers
+MONOREPO_SIGNALS = {
+    "pnpm": ["pnpm-workspace.yaml"],
+    "turborepo": ["turbo.json"],
+    "nx": ["nx.json"],
+    "lerna": ["lerna.json"],
+    "yarn_workspaces": [],  # detected via package.json "workspaces" field
+}
+
+# Conventional monorepo directory names (scanned up to 2 levels)
+MONOREPO_DIRS = {"apps", "packages", "services", "libs", "modules", "plugins", "tools"}
+
+CMD_PREFIXES = (
+    "pip", "npm", "npx", "node", "python", "python3", "pytest", "cargo",
+    "cd ", "git ", "docker", "make", "go ", "ruby", "bundle", "rails",
+    "brew", "apt", "yum", "curl", "wget", "ssh", "scp", "rsync",
+    "mkdir", "cp ", "mv ", "rm ", "ls ", "cat ", "echo ", "grep",
+    "playwright", "flask", "django", "uvicorn", "gunicorn", "next",
+    "tsc", "eslint", "prettier", "vitest", "jest", "mocha", "pnpm",
+    "turbo", "nx ", "lerna",
+    # Elixir
+    "mix ", "iex", "elixir",
+    # Swift
+    "swift ", "swiftc", "xcodebuild",
+    # Dart/Flutter
+    "dart ", "flutter ", "pub ",
+    # Zig
+    "zig ",
+    # Scala
+    "sbt ", "scala ",
+    # Go extras
+    "go build", "go test", "go run", "go mod",
+    # Java
+    "mvn ", "gradle", "java ", "javac",
+    # PHP
+    "php ", "composer ", "artisan",
+    # dotnet
+    "dotnet ",
+)
+
+TREE_CHARS = {"├", "│", "└", "─"}
+
+
+# ─────────────────────────────────────────────
+# Result tracking (replaces string-based counters)
+# ─────────────────────────────────────────────
+
+@dataclass
+class PlannedWrite:
+    """Pre-computed write decision for a single file."""
+    filename: str
+    exists: bool
+    mode: str  # "create", "overwrite", "skip"
+    reason: str = ""
+
+
+@dataclass
+class FileAction:
+    filename: str
+    action: str  # "create", "overwrite", "skip"
+    lines: int = 0
+    reason: str = ""
+
+
+@dataclass
+class RunResult:
+    actions: list = field(default_factory=list)
+    git_action: str = ""  # "stash", "committed", "skipped", "no-git", "aborted"
+
+    @property
+    def created_count(self) -> int:
+        return sum(1 for a in self.actions if a.action in ("create", "overwrite"))
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(1 for a in self.actions if a.action == "skip")
+
+
+# ─────────────────────────────────────────────
+# Git safety
+# ─────────────────────────────────────────────
+
+def _git(target: Path, *args, timeout: int = 10) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git"] + list(args),
+        capture_output=True, text=True, cwd=target, timeout=timeout,
+    )
+
+
+def git_check(target: Path) -> dict:
+    result = {
+        "is_git": False, "has_remote": False, "branch": "",
+        "dirty": False, "status_summary": "",
+        "modified_files": [], "untracked_files": [],
+    }
+
+    try:
+        inside = _git(target, "rev-parse", "--is-inside-work-tree")
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            return result
+
+        result["is_git"] = True
+
+        branch = _git(target, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if branch == "HEAD":  # detached HEAD
+            branch = _git(target, "rev-parse", "--short", "HEAD").stdout.strip()
+        result["branch"] = branch
+
+        result["has_remote"] = bool(_git(target, "remote").stdout.strip())
+
+        status = _git(target, "status", "--porcelain")
+        lines = [l for l in status.stdout.splitlines() if l.strip()]
+
+        for line in lines:
+            if line.startswith("??"):
+                result["untracked_files"].append(line[3:].strip())
+            else:
+                result["modified_files"].append(line[3:].strip())
+
+        result["dirty"] = bool(lines)
+
+        parts = []
+        if result["modified_files"]:
+            parts.append(f"{len(result['modified_files'])} modified/staged")
+        if result["untracked_files"]:
+            parts.append(f"{len(result['untracked_files'])} untracked")
+        result["status_summary"] = ", ".join(parts) if parts else "clean"
+
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    return result
+
+
+def _safe_input(prompt: str, default: str = "") -> str:
+    """input() wrapper that handles EOFError in non-TTY environments."""
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        if default:
+            print(f" (using default: {default})")
+        return default
+
+
+def git_stash(target: Path) -> Optional[str]:
+    """Stash dirty changes. Returns stash ref or None on failure."""
+    try:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        msg = f"super-claude safety stash ({ts})"
+
+        # Include untracked files in stash
+        r = _git(target, "stash", "push", "-u", "-m", msg, timeout=15)
+        if r.returncode == 0 and "No local changes" not in r.stdout:
+            # Get the stash ref
+            ref = _git(target, "stash", "list", "--max-count=1").stdout.strip()
+            return ref or "stash@{0}"
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def git_selective_commit(target: Path, files: list[str]) -> bool:
+    """Commit only specific files, without pulling in unrelated staged changes.
+
+    Uses `git add` to ensure files are tracked, then `git commit --only`
+    to create a commit containing exclusively these files. The --only flag
+    makes git ignore the current index state, so the user's staged work
+    is not captured in this backup commit.
+    """
+    try:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        msg = f"chore: backup before super-claude ({ts})"
+
+        existing = [f for f in files if (target / f).exists()]
+        if not existing:
+            return True  # nothing to back up
+
+        add = _git(target, "add", "--", *existing, timeout=10)
+        if add.returncode != 0:
+            return False
+
+        r = _git(target, "commit", "-m", msg, "--only", "--", *existing, timeout=15)
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def run_git_safety(target: Path, git_mode: str, files_to_write: list[str], interactive: bool) -> str:
+    """
+    Handle git safety before writing files.
+    Returns: "stash", "committed", "skipped", "no-git", "aborted"
+    """
+    git = git_check(target)
+
+    if not git["is_git"]:
+        return "no-git"
+
+    if not git["dirty"]:
+        print(f"  Git: {git['branch']} — clean")
+        return "skipped"
+
+    print(f"  Git: {git['branch']} — {git['status_summary']}")
+
+    if git_mode == "skip":
+        print("  Git safety: skipped (--git-mode skip)")
+        return "skipped"
+
+    if git_mode == "stash":
+        ref = git_stash(target)
+        if ref:
+            print(f"  Git safety: stashed → {ref}")
+            print(f"  To restore: git stash pop")
+            return "stash"
+        else:
+            print("  Git safety: stash failed, continuing anyway")
+            return "skipped"
+
+    # git_mode == "ask" — interactive
+    if not interactive:
+        # Non-interactive with --yes: default to stash
+        ref = git_stash(target)
+        if ref:
+            print(f"  Git safety: auto-stashed → {ref}")
+            return "stash"
+        return "skipped"
+
+    # Interactive prompt
+    print()
+    print("  Options:")
+    print("    [s] Stash changes (recommended — easy to restore with git stash pop)")
+    print("    [c] Commit only files that will be overwritten")
+    print("    [n] Skip — continue without safety net")
+    print("    [a] Abort — stop, change nothing")
+    print()
+
+    answer = _safe_input("  Choice [S/c/n/a]: ", default="s").strip().lower()
+
+    if answer in ("a", "abort"):
+        print("\n  Aborted. No files modified.")
+        return "aborted"
+
+    if answer in ("c", "commit"):
+        ok = git_selective_commit(target, files_to_write)
+        if ok:
+            print("  Committed backup of files that will be overwritten.")
+            return "committed"
+        else:
+            print("  Commit failed.")
+            retry = _safe_input("  Continue anyway? [y/N]: ", default="n").strip().lower()
+            return "skipped" if retry in ("y", "yes", "s", "sim") else "aborted"
+
+    if answer in ("n", "skip"):
+        print("  Skipping git safety.")
+        return "skipped"
+
+    # Default: stash
+    ref = git_stash(target)
+    if ref:
+        print(f"  Stashed → {ref}")
+        print(f"  To restore: git stash pop")
+        return "stash"
+    else:
+        print("  Stash failed, continuing anyway.")
+        return "skipped"
+
+
+# ─────────────────────────────────────────────
+# Deep content reader
+# ─────────────────────────────────────────────
+
+def safe_read(filepath: Path, max_chars: int = 50000) -> str:
+    """Read file safely with size limit. Tries to cut at last heading boundary."""
+    try:
+        if not filepath.exists() or not filepath.is_file():
+            return ""
+        content = filepath.read_text(encoding="utf-8", errors="ignore")
+        if len(content) <= max_chars:
+            return content
+        # Cut at last ## heading before limit to avoid mid-section truncation
+        truncated = content[:max_chars]
+        last_heading = truncated.rfind("\n## ")
+        if last_heading > max_chars * 0.6:  # only if we keep >60%
+            return truncated[:last_heading]
+        return truncated
+    except (PermissionError, OSError):
+        return ""
+
+
+def extract_md_sections(content: str) -> dict:
+    """
+    Extract markdown sections as {heading: body} ordered dict.
+    Uses hierarchical keys to prevent duplicate headings from clobbering each other.
+
+    Heading hierarchy is tracked via a stack. A `### Features` under `## Module A`
+    produces the key "Module A > Features", while `### Features` under `## Module B`
+    produces "Module B > Features".
+
+    For top-level consumers that search by substring (like read_existing_content),
+    this means they'll still match on the leaf heading name.
+
+    Limitations (documented):
+    - Content before first heading: stored under key ""
+    - # inside code blocks may be misread as headings
+    - Heading text is not deduplicated if identical at same level under same parent
+    """
+    sections = {}
+    # Stack: list of (level, heading_text) tuples
+    heading_stack = []
+    current_key = ""
+    current_lines = []
+    in_code_block = False
+
+    def _save():
+        body = "\n".join(current_lines).strip()
+        if body or current_key:
+            sections[current_key] = body
+
+    for line in content.split("\n"):
+        # Track code blocks to avoid treating # inside them as headings
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            current_lines.append(line)
+            continue
+
+        if in_code_block:
+            current_lines.append(line)
+            continue
+
+        match = re.match(r"^(#{1,4})\s+(.+)", line)
+        if match:
+            # Save previous section
+            _save()
+
+            level = len(match.group(1))
+            heading = match.group(2).strip()
+
+            # Pop stack to find parent: remove headings at same or deeper level
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+
+            heading_stack.append((level, heading))
+
+            # Build hierarchical key
+            if len(heading_stack) == 1:
+                current_key = heading
+            else:
+                current_key = " > ".join(h[1] for h in heading_stack)
+
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    _save()
+
+    # Remove empty preamble
+    if "" in sections and not sections[""]:
+        del sections[""]
+
+    return sections
+
+
+def read_existing_content(root: Path) -> dict:
+    """
+    Mine existing project files for reusable content.
+    Each extracted field is tagged with its source for provenance tracking.
+    """
+    ec = {
+        "readme_sections": {},
+        "claude_sections": {},
+        "standards_sections": {},
+        "errors_entries": [],
+        "description": "",
+        "architecture_notes": "",
+        "commands": [],
+        "env_notes": "",
+        "formatting_rules": [],
+        "deploy_notes": "",
+        "checklist_items": [],
+        "stakeholder_notes": "",
+        "data_sources": "",
+        "sub_project_table": "",
+        # Provenance: which sources contributed
+        "sources": set(),
+    }
+
+    # ── README.md ──
+    readme = safe_read(root / "README.md")
+    if readme:
+        ec["readme_sections"] = extract_md_sections(readme)
+        for line in readme.split("\n"):
+            line = line.strip()
+            if line and not line.startswith(("#", "[", "!", ">", "|", "```", "---", "*")):
+                ec["description"] = line[:300]
+                ec["sources"].add("README.md")
+                break
+
+    # ── CLAUDE.md ──
+    claude = safe_read(root / "CLAUDE.md")
+    if claude:
+        sections = extract_md_sections(claude)
+        ec["claude_sections"] = sections
+
+        # Global command extraction from all bash blocks
+        all_bash = re.findall(r"```(?:bash|sh|cmd)?\n(.*?)```", claude, re.DOTALL)
+        for block in all_bash:
+            for line in block.strip().split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if any(c in line for c in TREE_CHARS):
+                    continue
+                if any(line.lower().startswith(p) for p in CMD_PREFIXES):
+                    ec["commands"].append(line)
+        if ec["commands"]:
+            ec["sources"].add("CLAUDE.md:commands")
+
+        for key, body in sections.items():
+            kl = key.lower()
+
+            if any(w in kl for w in ["architect", "code architect", "data flow", "pattern"]):
+                # Accumulate: multiple architecture sections get joined
+                if ec["architecture_notes"]:
+                    ec["architecture_notes"] += f"\n\n**{key}:**\n{body[:2000]}"
+                else:
+                    ec["architecture_notes"] = body[:3000]
+                ec["sources"].add("CLAUDE.md:architecture")
+
+            if any(w in kl for w in ["environment", "env"]) and not any(w in kl for w in ["virtual", "venv"]):
+                if not ec["env_notes"]:  # take first match (usually the main one)
+                    ec["env_notes"] = body[:1000]
+                    ec["sources"].add("CLAUDE.md:environment")
+
+            if "format" in kl:
+                for line in body.split("\n"):
+                    line = line.strip()
+                    if line.startswith(("- ", "* ")):
+                        ec["formatting_rules"].append(line[2:].strip())
+                if ec["formatting_rules"]:
+                    ec["sources"].add("CLAUDE.md:formatting")
+
+            if any(w in kl for w in ["deploy", "application"]):
+                ec["deploy_notes"] = body[:1500]
+                ec["sources"].add("CLAUDE.md:deploy")
+
+            if any(w in kl for w in ["checklist", "pre-"]):
+                for line in body.split("\n"):
+                    line = line.strip()
+                    if line.startswith("- ["):
+                        ec["checklist_items"].append(line)
+                if ec["checklist_items"]:
+                    ec["sources"].add("CLAUDE.md:checklist")
+
+            if any(w in kl for w in ["stakeholder", "working with"]):
+                ec["stakeholder_notes"] = body[:1000]
+                ec["sources"].add("CLAUDE.md:stakeholders")
+
+            if "data source" in kl or ("data" in kl and "column" in body.lower()):
+                ec["data_sources"] = body[:2000]
+                ec["sources"].add("CLAUDE.md:data-sources")
+
+            if any(w in kl for w in ["subdirectory", "sub-project", "routing"]):
+                ec["sub_project_table"] = body[:2000]
+                ec["sources"].add("CLAUDE.md:routing")
+
+    # ── STANDARDS.md ──
+    standards = safe_read(root / "STANDARDS.md")
+    if standards:
+        ec["standards_sections"] = extract_md_sections(standards)
+        if len(ec["standards_sections"]) >= 4:
+            ec["sources"].add("STANDARDS.md")
+
+    # ── Error catalog ──
+    for err_file in ["ERRORS_AND_LESSONS.md", "ERROS_E_ACERTOS.md", "analysis/ERROS_E_ACERTOS.md"]:
+        err = safe_read(root / err_file)
+        if err:
+            err_clean = re.sub(r"```.*?```", "", err, flags=re.DOTALL)
+            entries = re.findall(r"###\s+(.+?)(?=\n###|\Z)", err_clean, re.DOTALL)
+            for e in entries:
+                e = e.strip()
+                if not e or len(e) < 20:
+                    continue
+                if "short description" in e.split("\n")[0].lower():
+                    continue
+                ec["errors_entries"].append(e[:500])
+            if ec["errors_entries"]:
+                ec["sources"].add(err_file)
+            break
+
+    return ec
+
+
+# ─────────────────────────────────────────────
+# Directory scanner
+# ─────────────────────────────────────────────
+
+def scan_directory(root: Path) -> dict:
+    result = {
+        "root": str(root.resolve()),
+        "name": root.resolve().name,
+        "is_empty": True,
+        "stacks": [],
+        "frameworks": [],
+        "deploy": [],
+        "has_git": False,
+        "existing_docs": [],
+        "sub_projects": [],
+        "directories": [],
+        "file_count": 0,
+        "extension_counts": defaultdict(int),
+        "config_files": [],
+        "test_dirs": [],
+        "env_files": [],
+        "scripts": {},
+        "description": "",
+        "existing_content": {},
+        "is_monorepo": False,
+        "monorepo_tool": "",
+        "workspace_dirs": [],
+    }
+
+    all_files = []
+    all_dirs = []
+    root_files = set()
+
+    try:
+        for item in root.iterdir():
+            try:
+                if item.name == ".git":
+                    result["has_git"] = True
+                    continue
+                if item.is_symlink() and not item.resolve().exists():
+                    continue  # skip broken symlinks
+                if item.name.startswith(".") and item.name not in (".env", ".env.example", ".github", ".gitlab-ci.yml"):
+                    continue
+                if item.is_file():
+                    root_files.add(item.name)
+                elif item.is_dir() and item.name in (".github",):
+                    root_files.add(item.name)
+            except (PermissionError, OSError):
+                continue
+    except (PermissionError, OSError) as e:
+        print(f"  Warning: cannot read directory {root}: {e}")
+        return result
+
+    # Also detect git via rev-parse (works from subdirectories inside a repo)
+    if not result["has_git"]:
+        try:
+            r = _git(root, "rev-parse", "--is-inside-work-tree")
+            if r.returncode == 0 and r.stdout.strip() == "true":
+                result["has_git"] = True
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        rel = Path(dirpath).relative_to(root)
+        if rel != Path("."):
+            all_dirs.append(str(rel))
+        for f in filenames:
+            fp = Path(dirpath) / f
+            all_files.append(str(fp.relative_to(root)))
+            ext = fp.suffix.lower()
+            if ext:
+                result["extension_counts"][ext] += 1
+            result["file_count"] += 1
+
+    result["is_empty"] = result["file_count"] == 0
+    result["directories"] = sorted(all_dirs)[:100]
+
+    # ── Stacks ──
+    for stack, signals in STACK_SIGNALS.items():
+        found_file = any(f in root_files for f in signals["files"])
+        found_ext = any(result["extension_counts"].get(ext, 0) > 0 for ext in signals["extensions"])
+        if not found_file:
+            found_file = any(
+                f in all_files or any(af.endswith("/" + f) for af in all_files)
+                for f in signals["files"]
+            )
+        if found_file or found_ext:
+            result["stacks"].append(stack)
+
+    # ── Frameworks (order-preserving dedup) ──
+    frameworks_seen = []
+    for framework, keywords in FRAMEWORK_SIGNALS.items():
+        for kw in keywords:
+            if kw in root_files:
+                frameworks_seen.append(framework)
+                break
+            for dep_file in ["package.json", "requirements.txt", "Pipfile", "Cargo.toml",
+                             "pyproject.toml", "go.mod", "mix.exs", "build.sbt",
+                             "pubspec.yaml", "composer.json"]:
+                dep_path = root / dep_file
+                if dep_path.exists():
+                    try:
+                        content = dep_path.read_text(encoding="utf-8", errors="ignore")[:10000]
+                        if kw.lower() in content.lower():
+                            frameworks_seen.append(framework)
+                            break
+                    except (PermissionError, OSError):
+                        pass
+            else:
+                continue
+            break
+    result["frameworks"] = list(dict.fromkeys(frameworks_seen))  # order-preserving dedup
+
+    # ── Deploy ──
+    for platform, signals in DEPLOY_SIGNALS.items():
+        for s in signals:
+            if (root / s).exists() or s in root_files or s in all_files:
+                result["deploy"].append(platform)
+                break
+
+    # ── Existing docs ──
+    for df in ["CLAUDE.md", "README.md", "STANDARDS.md", "QUICKSTART.md",
+               "ERRORS_AND_LESSONS.md", "ERROS_E_ACERTOS.md", "CONTRIBUTING.md",
+               "PLAN.md", "CHANGELOG.md"]:
+        if (root / df).exists():
+            result["existing_docs"].append(df)
+
+    # ── Monorepo detection ──
+    for tool, markers in MONOREPO_SIGNALS.items():
+        for m in markers:
+            if (root / m).exists():
+                result["is_monorepo"] = True
+                result["monorepo_tool"] = tool
+                break
+
+    # Check package.json for workspaces field
+    pkg_json = root / "package.json"
+    if pkg_json.exists():
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+            result["scripts"] = pkg.get("scripts", {})
+            result["description"] = pkg.get("description", "")
+            if "workspaces" in pkg:
+                result["is_monorepo"] = True
+                result["monorepo_tool"] = result["monorepo_tool"] or "yarn_workspaces"
+        except (json.JSONDecodeError, PermissionError, OSError):
+            pass
+
+    # ── Sub-projects (deep: conventional monorepo dirs + first-level) ──
+    sub_projects_seen = set()
+
+    for d in all_dirs:
+        dp = root / d
+        parts = Path(d).parts
+        depth = len(parts)
+
+        # Monorepo conventional: apps/X, packages/X, services/X, libs/X (depth 2)
+        # Check this FIRST so we can skip their parents below
+        if depth == 2 and parts[0] in MONOREPO_DIRS:
+            if any((dp / f).exists() for f in ["package.json", "requirements.txt", "Cargo.toml", "pyproject.toml", "CLAUDE.md"]):
+                sub_projects_seen.add(d)
+                result["is_monorepo"] = True
+
+        # First level: any dir with own CLAUDE.md or deps
+        # SKIP workspace container dirs (apps/, packages/, etc.) — their children are the real projects
+        if depth == 1 and d not in MONOREPO_DIRS:
+            if any((dp / f).exists() for f in ["CLAUDE.md", "package.json", "requirements.txt", "Cargo.toml"]):
+                sub_projects_seen.add(d)
+
+    result["sub_projects"] = sorted(sub_projects_seen)
+
+    # ── Workspace dirs (monorepo top-level) ──
+    for d in MONOREPO_DIRS:
+        if (root / d).is_dir():
+            result["workspace_dirs"].append(d)
+
+    # ── Test dirs ──
+    for d in all_dirs:
+        if Path(d).name.lower() in ("test", "tests", "__tests__", "spec", "specs", "e2e", "integration"):
+            result["test_dirs"].append(d)
+
+    # ── Config/env ──
+    for f in root_files:
+        if f.startswith(".env"):
+            result["env_files"].append(f)
+        if f.endswith((".yaml", ".yml", ".toml", ".ini", ".cfg")) and not f.startswith("."):
+            result["config_files"].append(f)
+
+    # ── Deep read ──
+    if not result["is_empty"]:
+        result["existing_content"] = read_existing_content(Path(result["root"]))
+        if not result["description"] and result["existing_content"].get("description"):
+            result["description"] = result["existing_content"]["description"]
+
+    return result
+
+
+# ─────────────────────────────────────────────
+# Project tier detection
+# ─────────────────────────────────────────────
+
+EXTERNAL_FRAMEWORKS = {
+    "django", "flask", "fastapi", "nextjs", "nestjs", "hono", "express",
+    "phoenix", "spring", "laravel", "gin", "fiber", "echo", "remix",
+    "astro", "rocket", "axum", "actix", "sveltekit",
+}
+
+
+def detect_project_tier(info: dict) -> dict:
+    """Suggest a project tier based on detected signals.
+
+    Returns {"tier": int, "confidence": str, "reasons": list[str]}.
+    Confidence: "high" (strong signals), "medium" (some signals), "low" (guessing).
+    """
+    reasons = []
+    frameworks = set(info.get("frameworks", []))
+    has_deploy = bool(info.get("deploy"))
+    has_external = bool(frameworks & EXTERNAL_FRAMEWORKS)
+    is_monorepo = info.get("is_monorepo", False)
+    is_empty = info.get("is_empty", False)
+    has_code = bool(info.get("stacks"))
+
+    # T1: multi-phase, writes to external systems
+    if has_deploy and has_external and is_monorepo:
+        reasons.append("deploy platform detected")
+        reasons.append("external-facing framework")
+        reasons.append("monorepo structure")
+        return {"tier": 1, "confidence": "high", "reasons": reasons}
+
+    if has_deploy and has_external:
+        reasons.append("deploy platform detected")
+        reasons.append("external-facing framework")
+        return {"tier": 1, "confidence": "medium", "reasons": reasons}
+
+    # T2: single-phase, external reads/writes
+    if has_external:
+        reasons.append("external-facing framework detected")
+        if has_deploy:
+            reasons.append("deploy platform detected")
+        return {"tier": 2, "confidence": "high" if has_deploy else "medium", "reasons": reasons}
+
+    # T3: local only — scripts, data processing
+    if has_code:
+        reasons.append("code detected but no external-facing framework")
+        return {"tier": 3, "confidence": "medium", "reasons": reasons}
+
+    # T4: docs/reference only
+    if is_empty or not has_code:
+        reasons.append("no code detected")
+        return {"tier": 4, "confidence": "low", "reasons": reasons}
+
+    return {"tier": 3, "confidence": "low", "reasons": ["unable to determine"]}
+
+
+# ─────────────────────────────────────────────
+# Provenance markers
+# ─────────────────────────────────────────────
+
+def _mark(tag: str) -> str:
+    """Inline HTML comment for provenance. Invisible in rendered markdown."""
+    return f"<!-- [{tag}] -->"
+
+
+# ─────────────────────────────────────────────
+# Generators — context-aware with provenance
+# ─────────────────────────────────────────────
+
+def generate_claude_md(info: dict) -> str:
+    name = info["name"]
+    ec = info.get("existing_content", {})
+    desc = info["description"] or ec.get("description") or f"{name} project"
+    stacks = ", ".join(info["stacks"]) if info["stacks"] else "not detected"
+    frameworks = ", ".join(info["frameworks"]) if info["frameworks"] else "none detected"
+    today = datetime.date.today().isoformat()
+    sources = ec.get("sources", set())
+
+    # Extract tier info early (used in frontmatter and overview)
+    tier = info.get("tier", {})
+    tier_num = tier.get("tier", 3)
+    tier_conf = tier.get("confidence", "low")
+    tier_reasons = tier.get("reasons", [])
+
+    # YAML frontmatter for machine-readable metadata
+    L = [
+        "---",
+        f"project: {name}",
+        f"stack: {stacks}",
+        f"framework: {frameworks}",
+        f"tier: T{tier_num}",
+        f"generated_by: super-claude v1.0",
+        f"last_updated: {today}",
+        "---", "",
+        "# CLAUDE.md", "",
+        "<!-- Target: keep this file under 300 lines. Split detail into STANDARDS.md or local CLAUDE.md files. -->",
+        "",
+        "This file provides guidance to Claude Code when working in this repository.", "",
+        "**Quick reference:** [QUICKSTART.md](QUICKSTART.md)",
+        "**Standards:** [STANDARDS.md](STANDARDS.md)",
+        "**Mistakes:** [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+        "", "---", "",
+        "## Routing Rules", "",
+        "If the task is inside a subdirectory that has its own CLAUDE.md:",
+        "1. **Read the local CLAUDE.md first** — it is the primary source for that scope.",
+        "2. Use this root file only as general context.",
+        "3. If the local file conflicts with this file, **the local file wins**.",
+        "",
+    ]
+
+    # Sub-projects
+    if ec.get("sub_project_table") and len(ec["sub_project_table"]) > 100:
+        L.extend([_mark("migrated"), ec["sub_project_table"], ""])
+    elif info["sub_projects"]:
+        L.extend([_mark("inferred"), "| Directory | Notes |", "|-----------|-------|"])
+        for sp in info["sub_projects"]:
+            has_c = (Path(info["root"]) / sp / "CLAUDE.md").exists()
+            L.append(f"| `{sp}/` | {'Has CLAUDE.md' if has_c else 'Has own deps'} |")
+        L.append("")
+
+    # Overview
+    L.extend(["---", "", "## Repository Overview", "", desc, ""])
+    L.append(f"**Tech stack:** {stacks}")
+    L.append(f"**Frameworks:** {frameworks}")
+    L.append(f"**Suggested tier:** T{tier_num} ({tier_conf} confidence) — review required")
+    if tier_reasons:
+        L.append(f"**Tier rationale:** {'; '.join(tier_reasons)}")
+    if info["deploy"]:
+        L.append(f"**Deploy:** {', '.join(info['deploy'])}")
+    if info["is_monorepo"]:
+        L.append(f"**Monorepo:** {info['monorepo_tool'] or 'detected'}")
+        if info["workspace_dirs"]:
+            L.append(f"**Workspace dirs:** {', '.join(info['workspace_dirs'])}")
+    L.append("")
+
+    # Directory tree
+    L.extend(["### Directory Structure", "", "```", f"{name}/"])
+    for d in [d for d in info["directories"] if "/" not in d][:15]:
+        L.append(f"├── {d}/")
+    for doc in info["existing_docs"]:
+        L.append(f"├── {doc}")
+    L.extend(["```", ""])
+
+    # Deploy notes
+    if ec.get("deploy_notes"):
+        L.extend([_mark("migrated"), "### Deployed Applications", "", ec["deploy_notes"], ""])
+
+    # Environment
+    L.extend(["---", "", "## Environment", ""])
+    if ec.get("env_notes"):
+        L.extend([_mark("migrated"), ec["env_notes"], ""])
+    else:
+        L.append(_mark("inferred"))
+        if "python" in info["stacks"]: L.append("- **Python:** 3.11+ recommended")
+        if "node" in info["stacks"]: L.append("- **Node.js:** 18+ recommended")
+        if "rust" in info["stacks"]: L.append("- **Rust:** stable toolchain")
+        if "go" in info["stacks"]: L.append("- **Go:** 1.21+")
+        if "elixir" in info["stacks"]: L.append("- **Elixir:** 1.16+ / OTP 26+")
+        if "swift" in info["stacks"]: L.append("- **Swift:** 5.9+")
+        if "dart" in info["stacks"]: L.append("- **Dart:** 3.0+ / Flutter 3.16+")
+        if "java" in info["stacks"]: L.append("- **Java:** 17+ (LTS)")
+        if "dotnet" in info["stacks"]: L.append("- **dotnet:** 8.0+")
+        if not info["stacks"]:
+            L.extend([
+                "- **Language:** (specify language and version)",
+                "- **Package manager:** (pip, npm, cargo, etc.)",
+                "- **Runtime:** (Node, Python, etc.)",
+            ])
+        L.append("")
+
+    # Commands
+    L.extend(["---", "", "## Common Commands", ""])
+    if ec.get("commands") and len(ec["commands"]) >= 3:
+        L.extend([_mark("migrated"), "```bash"])
+        seen = set()
+        for cmd in ec["commands"][:20]:
+            if cmd not in seen:
+                L.append(cmd)
+                seen.add(cmd)
+        L.extend(["```", ""])
+    else:
+        L.append(_mark("inferred"))
+        if "python" in info["stacks"]:
+            L.append("```bash")
+            if (Path(info["root"]) / "requirements.txt").exists():
+                L.append("pip install -r requirements.txt")
+            elif (Path(info["root"]) / "pyproject.toml").exists():
+                L.append("pip install -e .")
+            else:
+                L.append("pip install -r requirements.txt  # or: pip install -e .")
+            L.extend(["```", ""])
+        if "node" in info["stacks"]:
+            L.append("```bash")
+            L.append("npm install")
+            for sn, sc in list(info["scripts"].items())[:10]:
+                L.append(f"npm run {sn:<20s} # {sc[:60]}")
+            L.extend(["```", ""])
+        if "rust" in info["stacks"]:
+            L.extend(["```bash", "cargo build", "cargo test", "cargo run", "```", ""])
+        if "go" in info["stacks"]:
+            L.extend(["```bash", "go mod download", "go build ./...", "go test ./...", "```", ""])
+        if "elixir" in info["stacks"]:
+            L.extend(["```bash", "mix deps.get", "mix compile", "mix test", "```", ""])
+        if "dart" in info["stacks"]:
+            if "flutter" in info["frameworks"]:
+                L.extend(["```bash", "flutter pub get", "flutter run", "flutter test", "```", ""])
+            else:
+                L.extend(["```bash", "dart pub get", "dart run", "dart test", "```", ""])
+        if "java" in info["stacks"]:
+            root = Path(info["root"])
+            if (root / "pom.xml").exists():
+                L.extend(["```bash", "mvn install", "mvn test", "```", ""])
+            elif (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
+                L.extend(["```bash", "gradle build", "gradle test", "```", ""])
+            else:
+                L.extend(["```bash", "mvn install  # or: gradle build", "```", ""])
+        if "dotnet" in info["stacks"]:
+            L.extend(["```bash", "dotnet restore", "dotnet build", "dotnet test", "```", ""])
+        if not info["stacks"]:
+            L.extend([
+                _mark("placeholder"),
+                "```bash",
+                "# Install dependencies",
+                "# (add install command here)",
+                "",
+                "# Run development server",
+                "# (add run command here)",
+                "",
+                "# Run tests",
+                "# (add test command here)",
+                "",
+                "# Build for production",
+                "# (add build command here)",
+                "```", "",
+            ])
+
+        # Framework-specific commands
+        fw = set(info.get("frameworks", []))
+        fw_cmds = []
+        if "django" in fw:
+            fw_cmds.extend(["python manage.py migrate", "python manage.py runserver",
+                            "python manage.py createsuperuser"])
+        if "flask" in fw:
+            fw_cmds.extend(["flask run", "flask db upgrade"])
+        if "fastapi" in fw:
+            fw_cmds.append("uvicorn main:app --reload")
+        if "nextjs" in fw:
+            fw_cmds.extend(["npm run dev", "npm run build", "npm run start"])
+        if "phoenix" in fw:
+            fw_cmds.extend(["mix phx.server", "mix ecto.setup", "mix ecto.migrate"])
+        if "spring" in fw:
+            fw_cmds.append("mvn spring-boot:run")
+        if "laravel" in fw:
+            fw_cmds.extend(["php artisan serve", "php artisan migrate"])
+        if fw_cmds:
+            L.extend([_mark("inferred"), "### Framework Commands", "", "```bash"])
+            for cmd in fw_cmds:
+                L.append(cmd)
+            L.extend(["```", ""])
+
+    # Testing
+    if info["test_dirs"]:
+        L.extend(["---", "", "## Testing", "", f"Test directories: {', '.join(info['test_dirs'])}", "", "```bash"])
+        if "python" in info["stacks"]: L.append("pytest")
+        if "node" in info["stacks"]: L.append("npm test")
+        if "rust" in info["stacks"]: L.append("cargo test")
+        if "go" in info["stacks"]: L.append("go test ./...")
+        if "elixir" in info["stacks"]: L.append("mix test")
+        if "dart" in info["stacks"]: L.append("flutter test" if "flutter" in info["frameworks"] else "dart test")
+        if "java" in info["stacks"]: L.append("mvn test" if (Path(info["root"]) / "pom.xml").exists() else "gradle test")
+        if "dotnet" in info["stacks"]: L.append("dotnet test")
+        L.extend(["```", ""])
+
+    # Architecture
+    L.extend(["---", "", "## Code Architecture", ""])
+    if ec.get("architecture_notes"):
+        L.extend([_mark("migrated"), ec["architecture_notes"], ""])
+    else:
+        L.extend([
+            _mark("placeholder"), "",
+            "### Patterns",
+            "<!-- Ex: MVC, Clean Architecture, Event-driven, Layered, etc. -->", "",
+            "### Key Modules",
+            "<!-- List the main modules/packages and their responsibilities -->", "",
+            "### Data Flow",
+            "<!-- Describe the primary data flow of the application -->", "",
+        ])
+
+    # Data sources
+    if ec.get("data_sources"):
+        L.extend(["---", "", "## Data Sources", "", _mark("migrated"), ec["data_sources"], ""])
+
+    # Invariants (with Iron Laws)
+    L.extend([
+        "---", "", "## Invariants", "",
+        "> **Iron Law:** Read before writing. Understand existing code before changing it.",
+        "",
+        "- Validate external input at system boundaries",
+        "- Never silently swallow errors — log or propagate with context",
+        "- Prefer dry-run for operations with external side effects",
+        "- Document decisions that affect future tasks",
+        "- Read local CLAUDE.md before modifying scoped code",
+        "",
+    ])
+
+    # Decision Heuristics
+    L.extend([
+        "---", "", "## Decision Heuristics", "",
+        "When in doubt, apply these in order:", "",
+        "1. **Reversible over perfect** — prefer actions you can undo over waiting for certainty",
+        "2. **Smallest viable change** — solve the immediate problem, nothing more",
+        "3. **Existing patterns over new abstractions** — follow what the codebase already does",
+        "4. **Explicit failure over silent success** — if unsure something worked, make it loud",
+        "5. **Data over debate** — run the test, check the log, read the error",
+        "6. **Ask over assume** — when a decision has consequences you cannot reverse, ask the user",
+        "",
+    ])
+
+    # Verification Standard
+    L.extend([
+        "---", "", "## Verification Standard", "",
+        "> **Iron Law:** Evidence before claims, always.",
+        "",
+        "- Run the actual command — don't assume success",
+        "- Fresh verification after every change — stale results are lies",
+        "- Independent verification — don't trust agent output without checking",
+        "- Verify at every layer the data passes through (defense-in-depth)",
+        "",
+    ])
+
+    # Red Flags
+    L.extend([
+        "---", "", "## Red Flags", "",
+        "If you catch yourself thinking any of these, **STOP and follow the process:**", "",
+        "- \"This is just a quick fix\" → Follow the full process anyway",
+        "- \"I don't need to test this\" → You definitely need to test this",
+        "- \"It should work now\" → RUN the verification",
+        "- \"One more attempt should fix it\" → 3+ failures = architectural problem, step back",
+        "- \"Too simple to need a plan\" → Simple changes break complex systems",
+        "- \"I'll clean it up later\" → Later never comes. Do it right now",
+        "",
+    ])
+
+    # Stuck Protocol
+    L.extend([
+        "---", "", "## Stuck Protocol", "",
+        "If you have tried **3+ approaches** to the same problem without progress:", "",
+        "1. **Stop** — do not attempt another fix",
+        "2. **Document** the blocker: what you tried, what failed, what you suspect",
+        "3. **List** remaining untried approaches (if any)",
+        "4. **Skip** — move to the next task or ask the user for guidance", "",
+        "Spinning without progress is the most expensive failure mode. Detecting it early is critical.",
+        "",
+    ])
+
+    # Key Decisions
+    L.extend([
+        "---", "", "## Key Decisions", "",
+        _mark("placeholder"),
+        "| Decision | Rationale | Status |",
+        "|----------|-----------|--------|",
+        "| <!-- e.g. Use PostgreSQL --> | <!-- why this choice --> | <!-- Active / Revisit / Superseded --> |",
+        "",
+        "<!-- Track decisions that constrain future work. Remove rows when no longer relevant. -->",
+        "",
+    ])
+
+    # Active Risks
+    L.extend([
+        "---", "", "## Active Risks", "",
+        _mark("placeholder"),
+        "<!-- What is currently fragile, under migration, or operationally risky -->",
+        "<!-- Remove items as they are resolved -->",
+        "",
+    ])
+
+    # Formatting
+    L.extend(["---", "", "## Formatting Standards", ""])
+    if ec.get("formatting_rules"):
+        L.append(_mark("migrated"))
+        for rule in ec["formatting_rules"]:
+            L.append(f"- {rule}")
+        L.append("")
+    else:
+        L.extend([
+            _mark("placeholder"),
+            "- Use consistent indentation (spaces or tabs, not mixed)",
+            "- Maximum line length: 100 characters",
+            "- Files end with a single newline",
+            "- No trailing whitespace",
+            "- Use descriptive variable and function names",
+            "- Keep functions focused — one responsibility per function",
+            "- Prefer explicit over implicit",
+            "",
+        ])
+
+    # Stakeholders
+    if ec.get("stakeholder_notes"):
+        L.extend(["---", "", "## Stakeholder Preferences", "",
+                   _mark("migrated"), ec["stakeholder_notes"], ""])
+
+    # Pre-Task Protocol (Announce-at-Start + Checklist)
+    L.extend(["---", "", "## Pre-Task Protocol", ""])
+    L.extend([
+        "### Announce at Start", "",
+        "Before writing any code, announce:", "",
+        "1. **What approach** you are using (fix, feature, refactor, etc.)",
+        "2. **Which files** you expect to modify",
+        "3. **What verification** you will run when done", "",
+    ])
+    L.extend(["### Checklist", "", "Before starting any task:", ""])
+    if ec.get("checklist_items"):
+        L.append(_mark("migrated"))
+        L.extend(ec["checklist_items"])
+    else:
+        L.append(_mark("placeholder"))
+        L.append("- [ ] Read ERRORS_AND_LESSONS.md for known pitfalls")
+        L.append("- [ ] Check if a local CLAUDE.md exists in the working directory")
+        L.append("- [ ] Understand the existing code before making changes")
+        L.append("- [ ] Run tests after changes to verify nothing broke")
+        L.append("- [ ] Keep changes minimal and focused on the task")
+        if info["env_files"]:
+            L.append("- [ ] Verify `.env` configuration is up to date")
+    L.append("")
+
+    # Post-Task Protocol
+    L.extend([
+        "### Post-Task", "",
+        "Before ending a session or completing a task:", "",
+        "- [ ] Update ERRORS_AND_LESSONS.md if you hit a non-obvious problem",
+        "- [ ] Record any decision that constrains future work in Key Decisions",
+        "- [ ] If work is incomplete, leave a clear note about what remains",
+        "- [ ] Run final verification to confirm nothing is broken",
+        "",
+    ])
+
+    # Parallel Development (worktrees) — only for git projects
+    if info["has_git"]:
+        L.extend([
+            "---", "", "## Parallel Development", "",
+            "Use git worktrees for parallel tasks without branch-switching conflicts:", "",
+            "```bash",
+            "claude --worktree feature-name    # isolated worktree + Claude session",
+            "claude -w bugfix-123 --tmux       # worktree in tmux session",
+            "git worktree list                 # see all active worktrees",
+            "```", "",
+            "- Each worktree gets its own branch and working directory",
+            "- Worktrees share git history — no duplicate clones",
+            "- Focus independent tasks in parallel — avoid editing same files",
+            "- Cleanup is automatic when Claude session ends without changes",
+            "",
+        ])
+
+    # Provenance summary
+    if sources:
+        L.extend(["---", "", "## Provenance", "",
+                   "Content in this file was assembled from:", ""])
+        for src in sorted(sources):
+            L.append(f"- `{src}`")
+        L.append("")
+        L.append("Sections containing `migrated` in a comment came from existing files — verify accuracy.")
+        L.append("Sections containing `inferred` were detected from project structure — may need correction.")
+        L.append("Sections containing `placeholder` need manual input.")
+        L.append("")
+
+    L.extend(["---", "", "## Document Information", "",
+              f"**Last Updated:** {today}",
+              f"**Generated by:** super-claude v1.0"])
+
+    return "\n".join(L) + "\n"
+
+
+def generate_quickstart_md(info: dict) -> str:
+    ec = info.get("existing_content", {})
+    L = [
+        "# Quick Start — Command Reference", "",
+        "Commands only. For context: [CLAUDE.md](CLAUDE.md). For rules: [STANDARDS.md](STANDARDS.md).",
+        "", "---", "",
+    ]
+
+    if ec.get("commands") and len(ec["commands"]) >= 3:
+        L.extend([_mark("migrated"), "## Commands", "", "```bash"])
+        seen = set()
+        for cmd in ec["commands"][:15]:
+            if cmd not in seen:
+                L.append(cmd)
+                seen.add(cmd)
+        L.extend(["```", ""])
+    else:
+        L.extend([_mark("inferred"), "## Setup", "", "```bash"])
+        if "python" in info["stacks"]:
+            root = Path(info["root"])
+            if (root / "requirements.txt").exists():
+                L.append("pip install -r requirements.txt")
+            elif (root / "pyproject.toml").exists():
+                L.append("pip install -e .")
+            else:
+                L.append("pip install -r requirements.txt")
+        if "node" in info["stacks"]: L.append("npm install")
+        if "rust" in info["stacks"]: L.append("cargo build")
+        if "go" in info["stacks"]: L.append("go mod download")
+        if "elixir" in info["stacks"]: L.append("mix deps.get")
+        if "dart" in info["stacks"]: L.append("flutter pub get" if "flutter" in info.get("frameworks", []) else "dart pub get")
+        if "java" in info["stacks"]:
+            root = Path(info["root"])
+            if (root / "pom.xml").exists():
+                L.append("mvn install")
+            elif (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
+                L.append("gradle build")
+            else:
+                L.append("mvn install")
+        if "dotnet" in info["stacks"]: L.append("dotnet restore")
+        if not info["stacks"]:
+            L.extend([
+                "# 1. Install dependencies",
+                "# (add install command here)",
+                "",
+                "# 2. Configure environment",
+                "# cp .env.example .env",
+                "",
+                "# 3. Run",
+                "# (add run command here)",
+            ])
+        L.extend(["```", ""])
+
+        if info["scripts"]:
+            L.extend(["## Run", "", "```bash"])
+            priority = ["dev", "start", "build", "test", "lint", "format", "deploy"]
+            added = set()
+            for s in priority:
+                if s in info["scripts"]:
+                    L.append(f"npm run {s}")
+                    added.add(s)
+            for s in info["scripts"]:
+                if s not in added and len(added) < 10:
+                    L.append(f"npm run {s}")
+                    added.add(s)
+            L.extend(["```", ""])
+
+    if info["test_dirs"]:
+        L.extend(["## Test", "", "```bash"])
+        if "python" in info["stacks"]: L.append("pytest")
+        if "node" in info["stacks"]: L.append("npm test")
+        if "rust" in info["stacks"]: L.append("cargo test")
+        if "go" in info["stacks"]: L.append("go test ./...")
+        if "elixir" in info["stacks"]: L.append("mix test")
+        if "dart" in info["stacks"]: L.append("flutter test" if "flutter" in info.get("frameworks", []) else "dart test")
+        if "dotnet" in info["stacks"]: L.append("dotnet test")
+        L.extend(["```", ""])
+
+    L.extend(["## Quick Fixes", "", "| Problem | Fix |", "|---------|-----|"])
+    if "python" in info["stacks"]:
+        L.append("| Module not found | `pip install -r requirements.txt` |")
+    if "node" in info["stacks"]:
+        L.append("| Module not found | `rm -rf node_modules && npm install` |")
+        L.append("| Port in use | `npm run dev -- -p 3001` |")
+    if "elixir" in info["stacks"]:
+        L.append("| Deps conflict | `mix deps.clean --all && mix deps.get` |")
+    if "go" in info["stacks"]:
+        L.append("| Module mismatch | `go mod tidy` |")
+    if not info["stacks"]:
+        L.append("| Permission denied | `chmod +x script.sh` |")
+        L.append("| Port already in use | `lsof -i :PORT` then `kill -9 PID` |")
+        L.append("| Git merge conflict | Resolve manually, then `git add . && git commit` |")
+        L.append("| Env var missing | Check `.env` file or export manually |")
+    # Complete Example Workflow
+    L.extend([
+        "", "## Complete Workflow Example", "",
+        "A typical development cycle from start to finish:", "",
+        "```bash",
+        "# 1. Set up (first time only)",
+    ])
+    if "python" in info["stacks"]:
+        L.append("python -m venv .venv && source .venv/bin/activate")
+        L.append("pip install -r requirements.txt")
+    elif "node" in info["stacks"]:
+        L.append("npm install")
+    elif "rust" in info["stacks"]:
+        L.append("cargo build")
+    else:
+        L.append("# (run install command)")
+    L.extend([
+        "",
+        "# 2. Create a branch for your work",
+        "git checkout -b feature/my-feature",
+        "",
+        "# 3. Make changes, then verify",
+    ])
+    if "python" in info["stacks"]:
+        L.append("pytest  # run tests")
+    elif "node" in info["stacks"]:
+        L.append("npm test  # run tests")
+    elif "rust" in info["stacks"]:
+        L.append("cargo test  # run tests")
+    else:
+        L.append("# (run test command)")
+    L.extend([
+        "",
+        "# 4. Commit and push",
+        "git add -A && git commit -m 'feat: describe your change'",
+        "git push -u origin feature/my-feature",
+        "```", "",
+    ])
+
+    L.extend(["## References", "",
+              "- [CLAUDE.md](CLAUDE.md)",
+              "- [STANDARDS.md](STANDARDS.md)",
+              "- [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+              "", "---", f"**Last Updated:** {datetime.date.today().isoformat()}"])
+
+    return "\n".join(L) + "\n"
+
+
+def generate_standards_md(info: dict) -> str:
+    today = datetime.date.today().isoformat()
+    ec = info.get("existing_content", {})
+    has_external = any(
+        f in info["frameworks"]
+        for f in ["django", "flask", "fastapi", "nextjs", "nestjs", "hono", "express",
+                  "phoenix", "spring", "laravel", "gin", "fiber", "echo", "remix", "astro"]
+    )
+
+    existing = ec.get("standards_sections", {})
+    if len(existing) >= 4:
+        L = [
+            "# STANDARDS.md — QA & Documentation Standards", "",
+            "Quality assurance and documentation standards for this repository.", "",
+            "**Referenced by CLAUDE.md. Enforced by Claude Code.**", "",
+            "**Verifiability principle:** Every rule in this file can be checked objectively.",
+            "", _mark("migrated"), "", "---", "",
+        ]
+        for heading, body in existing.items():
+            if not heading:
+                continue
+            L.extend([f"## {heading}", "", body, ""])
+        L.append(f"**Last Updated:** {today}")
+        return "\n".join(L) + "\n"
+
+    # ── Tier detection for gates ──
+    tier = info.get("tier", {})
+    tier_num = tier.get("tier", 3)
+
+    L = [
+        "# STANDARDS.md — Governance & Quality Standards", "",
+        "Lean governance for this repository. Every rule is objectively verifiable.", "",
+        "**Referenced by:** [CLAUDE.md](CLAUDE.md)", "",
+        "**Assumed knowledge:** Language-standard conventions (PEP 8, ESLint defaults, etc.) are assumed.",
+        "This file only documents project-specific rules and deviations.",
+        "", "---", "",
+
+        # Core Principles
+        "## 1. Core Principles", "",
+        "> **Iron Law:** Every rule must protect more than it costs. Remove rules that create drag without value.",
+        "",
+        "- **Evidence over opinion** — decisions backed by data or tested behavior",
+        "- **Parse at the boundary** — validate external input where it enters the system",
+        "- **Errors carry context** — never swallow exceptions; log or propagate with details",
+        "- **Idempotency where it matters** — re-running should be safe or explicitly documented as unsafe",
+        "- **Document decisions that affect future work** — not all decisions, just consequential ones",
+        "- **Least powerful tool** — use the simplest approach that solves the problem",
+        "- **Verify before claiming done** — evidence before completion claims, always",
+        "", "---", "",
+
+        # Project Tiers
+        "## 2. Project Tiers", "",
+        "| Tier | Blast Radius | Required Gates | Max Iterations |",
+        "|------|-------------|----------------|----------------|",
+        "| **T1** | Multi-phase, writes to external systems | README, CLAUDE.md, PLAN.md, dry-run, preflight, manifest | 15 |",
+        "| **T2** | Single-phase, external reads/writes | README, CLAUDE.md, dry-run, preflight | 10 |",
+        "| **T3** | Local only — reads data, generates reports | README | 7 |",
+        "| **T4** | Reference material, static resources | Optional | 5 |",
+        "", "---", "",
+
+        # Required Gates by Tier
+        "## 3. Required Gates by Tier", "",
+    ]
+
+    # T1/T2 gates
+    if tier_num <= 2 or has_external:
+        L.extend([
+            "### T1/T2 — External Systems", "",
+            "- **Dry-run default:** no writes without `--live` flag",
+            "- **Preflight validation:** inputs exist and are well-formed before execution",
+            "- **Manifest output:** JSON manifest in `output/` after every run",
+            "- **Rollback info:** manifest contains enough data to undo manually",
+            "- **Idempotency:** README documents whether re-running is safe", "",
+        ])
+
+    L.extend([
+        "### T3 — Local Processing", "",
+        "- Validate input files before processing",
+        "- Clear error messages on failure",
+        "- Non-zero exit code on error", "",
+    ])
+
+    L.extend([
+        "### T4 — Documentation", "",
+        "- No execution-level gates required",
+        "", "---", "",
+    ])
+
+    # Naming Conventions
+    L.extend(["## 4. Naming Conventions", ""])
+    if "python" in info["stacks"]:
+        L.extend(["### Python", "- Files: `snake_case.py`", "- Verb-first for scripts: `publish_`, `validate_`", ""])
+    if "node" in info["stacks"]:
+        L.extend(["### JavaScript/TypeScript", "- Files: `camelCase.ts` or `kebab-case.ts` (be consistent)", "- Components: `PascalCase.tsx`", ""])
+    if "rust" in info["stacks"]:
+        L.extend(["### Rust", "- Files: `snake_case.rs`", ""])
+    if "go" in info["stacks"]:
+        L.extend(["### Go", "- Files: `snake_case.go`", "- Packages: short, lowercase, no underscores", ""])
+    if "elixir" in info["stacks"]:
+        L.extend(["### Elixir", "- Files: `snake_case.ex`", "- Modules: `PascalCase`", ""])
+    if "java" in info["stacks"]:
+        L.extend(["### Java/Kotlin", "- Files: `PascalCase.java` / `PascalCase.kt`", "- Packages: `com.company.project`", ""])
+    if "dart" in info["stacks"]:
+        L.extend(["### Dart", "- Files: `snake_case.dart`", "- Classes: `PascalCase`", ""])
+    if not info["stacks"]:
+        L.extend([
+            "### General",
+            "- Files: lowercase with hyphens or underscores (be consistent)",
+            "- Constants: `UPPER_SNAKE_CASE`",
+            "- Functions/methods: descriptive, verb-first names",
+            "- Classes: `PascalCase`",
+            "",
+        ])
+
+    L.extend([
+        "### Config & Output",
+        "- Config: YAML or TOML", "- Data/output: JSON", "- Secrets: `.env` (never committed)",
+        "", "---", "",
+
+        # Code Quality
+        "## 5. Code Quality", "",
+        "<HARD-GATE>No hardcoded secrets or credentials in code — ever.</HARD-GATE>", "",
+        "| Rule | Severity |",
+        "|------|----------|",
+        "| No hardcoded secrets or credentials | CRITICAL |",
+        "| Error handling: never silently swallow exceptions | CRITICAL |",
+        "| No silent failures — if something goes wrong, it must be visible | HIGH |",
+        "| No commented-out code in commits | HIGH |",
+        "| No `TODO` without a linked issue or explanation | MEDIUM |",
+        "| Dependencies: pin versions in lock files | MEDIUM |",
+        "", "---", "",
+
+        # Git Conventions
+        "## 6. Git Conventions", "",
+        "- Branch naming: `feature/`, `fix/`, `chore/` prefixes",
+        "- Commit messages: imperative mood, max 72 chars first line",
+        "- One logical change per commit",
+        "- Never commit `.env`, credentials, or large binaries",
+        "", "---", "",
+
+        # Plan Format
+        "## 7. Plan Format Standard", "",
+        "When writing implementation plans:", "",
+        "- Break work into bite-sized tasks (2-5 minutes each)",
+        "- Each task specifies: exact file paths, expected changes, verification command",
+        "- Tasks are written for someone with zero context about the codebase",
+        "- Order: setup → implement → test → verify → document",
+        "- Include expected output for verification commands",
+        "", "---", "",
+
+        # Documentation Relevance
+        "## 8. Documentation Relevance Rule", "",
+        "Document only what helps someone proceed safely with the next task.", "",
+        "- If a decision constrains future work → document it",
+        "- If a workaround exists for a known issue → document it in ERRORS_AND_LESSONS.md",
+        "- If documentation would be stale within a sprint → skip it",
+        "- Pressure-test documentation: if an agent rationalizes around a rule, add an explicit counter",
+        "", "---", "",
+
+        # Exception Rule
+        "## 9. Exception Rule", "",
+        "<HARD-GATE>Undocumented exceptions are treated as bugs.</HARD-GATE>", "",
+        "Any rule in this file can be overridden if:", "",
+        "1. The exception is documented in the PR or commit message",
+        "2. The reason explains why the rule does not apply",
+        "3. The override is scoped — it does not disable the rule globally",
+        "",
+        "### Common Legitimate Exceptions", "",
+        "| Scenario | Minimum Requirement |",
+        "|----------|-------------------|",
+        "| Prototype/spike (will be discarded) | Mark branch as throwaway, no merge to main |",
+        "| Third-party/vendored code | Document source and version |",
+        "| Emergency hotfix | Post-incident review within 48 hours |",
+        "| Generated code (codegen, migrations) | Document generator and regeneration steps |",
+        "| One-time script | Comment with purpose and expiration at top of file |",
+        "", "---", "",
+
+        # Error Catalog
+        "## 10. Error Catalog", "",
+        "All recurring errors must be documented in [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md).", "",
+        "---", "",
+        f"**Created:** {today}", f"**Last Updated:** {today}",
+    ])
+
+    return "\n".join(L) + "\n"
+
+
+def generate_errors_md(info: dict) -> str:
+    ec = info.get("existing_content", {})
+    entries = ec.get("errors_entries", [])
+
+    L = [
+        "# Errors & Lessons — Mistake Catalog", "",
+        "Consult this file **before starting any task**. Organized by category, not chronologically.",
+        "", "## Format", "",
+        "```markdown",
+        "### [Category] Short description",
+        "**Context:** When/where this happens",
+        "**Wrong:** What we did that failed",
+        "**Right:** What actually works",
+        "**Date:** When discovered",
+        "```", "",
+        "## Categories", "",
+        "Use one of: Data Processing, Dependencies, API, Deploy, Logic, Config, Testing,",
+        "Tech Debt, Security, Performance, Fragile Areas",
+        "", "---", "",
+    ]
+
+    if entries:
+        L.extend([_mark("migrated"), ""])
+        for entry in entries:
+            first_line = entry.split("\n")[0]
+            rest = "\n".join(entry.split("\n")[1:]).strip()
+            L.append(f"### {first_line}")
+            if rest:
+                L.append(rest)
+            L.append("")
+    else:
+        L.extend([
+            _mark("placeholder"), "",
+            "### [Dependencies] Example: version mismatch after update",
+            "**Context:** After updating a dependency, imports or builds break",
+            "**Wrong:** Blindly updating all deps at once without testing",
+            "**Right:** Update one dependency at a time, run tests between each",
+            "**Date:** (template)", "",
+            "### [Config] Example: environment variable not loaded",
+            "**Context:** App fails on startup with missing config error",
+            "**Wrong:** Hardcoding the value as a workaround",
+            "**Right:** Check .env file exists, verify loading mechanism, add to .env.example",
+            "**Date:** (template)", "",
+            "### [Logic] Example: off-by-one in pagination",
+            "**Context:** API returns duplicate or missing items at page boundaries",
+            "**Wrong:** Using 1-based offset with 0-based index",
+            "**Right:** Standardize on 0-based indexing internally, convert at boundaries",
+            "**Date:** (template)", "",
+            "> **Note:** Replace these examples with real entries as errors are discovered.",
+            "> Delete the examples once you have real entries.",
+        ])
+
+    # Rationalization Table — common excuses mapped to reality
+    L.extend([
+        "", "---", "",
+        "## Rationalization Table", "",
+        "Common excuses that lead to mistakes. If you catch yourself thinking these, stop.", "",
+        "| Excuse | Reality |",
+        "|--------|---------|",
+        "| \"Too simple to test\" | Simple code breaks. A test takes 30 seconds. |",
+        "| \"I'll fix it later\" | Later never comes. First fix sets the pattern. |",
+        "| \"Should work now\" | RUN the verification. Assumptions are bugs waiting to happen. |",
+        "| \"Just a quick fix\" | Quick fixes become permanent. Follow the full process. |",
+        "| \"I'll test after I finish\" | Tests written after code are weaker. Write them first. |",
+        "| \"The agent said it succeeded\" | Verify independently. Trust but verify. |",
+        "| \"One more attempt should fix it\" | 3+ failures = architectural problem. Step back. |",
+        "| \"This doesn't need a plan\" | Plans prevent wasted effort. 5 minutes of planning saves hours. |",
+        "| \"I know this codebase\" | Read the code anyway. Memory is unreliable. |",
+        "",
+    ])
+
+    # Defense-in-Depth Debugging Pattern
+    L.extend([
+        "---", "",
+        "## Defense-in-Depth Debugging", "",
+        "After fixing any bug, validate at every layer the data passes through:", "",
+        "1. **Entry point** — is the input correct where it enters the system?",
+        "2. **Business logic** — does the transformation produce the right result?",
+        "3. **Environment guards** — are configs, permissions, and dependencies correct?",
+        "4. **Output verification** — does the final output match expectations?", "",
+        "Don't stop at the first layer that looks correct. Bugs hide behind other bugs.",
+        "",
+    ])
+
+    return "\n".join(L) + "\n"
+
+
+def generate_readme_md(info: dict) -> str:
+    name = info["name"]
+    desc = info["description"] or "(Add project description)"
+    stacks = ", ".join(info["stacks"]) if info["stacks"] else ""
+
+    L = [f"# {name}", "", desc, ""]
+    if stacks:
+        L.extend([f"**Stack:** {stacks}", ""])
+    if info["is_monorepo"]:
+        L.extend([f"**Monorepo:** {info['monorepo_tool'] or 'detected'}", ""])
+    L.extend([
+        "## Setup", "", "See [QUICKSTART.md](QUICKSTART.md) for commands.", "",
+        "## Documentation", "",
+        "- [CLAUDE.md](CLAUDE.md) — Full project context for Claude Code",
+        "- [STANDARDS.md](STANDARDS.md) — QA and documentation rules",
+        "- [QUICKSTART.md](QUICKSTART.md) — Command reference",
+        "- [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md) — Mistake catalog",
+    ])
+
+    return "\n".join(L) + "\n"
+
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+
+# Default file set (README.md excluded — opt-in with --with-readme)
+DEFAULT_FILES = [
+    ("CLAUDE.md", generate_claude_md),
+    ("QUICKSTART.md", generate_quickstart_md),
+    ("STANDARDS.md", generate_standards_md),
+    ("ERRORS_AND_LESSONS.md", generate_errors_md),
+]
+
+
+def _empty_scan_result(target: Path) -> dict:
+    """Return a blank scan result for nonexistent/empty directories."""
+    return {
+        "root": str(target),
+        "name": target.name,
+        "is_empty": True,
+        "stacks": [],
+        "frameworks": [],
+        "deploy": [],
+        "has_git": False,
+        "existing_docs": [],
+        "sub_projects": [],
+        "directories": [],
+        "file_count": 0,
+        "extension_counts": defaultdict(int),
+        "config_files": [],
+        "test_dirs": [],
+        "env_files": [],
+        "scripts": {},
+        "description": "",
+        "existing_content": {},
+        "is_monorepo": False,
+        "monorepo_tool": "",
+        "workspace_dirs": [],
+    }
+
+
+# ─────────────────────────────────────────────
+# Interactive wizard for empty projects
+# ─────────────────────────────────────────────
+
+_FRAMEWORKS_BY_STACK = {
+    "python": ["django", "flask", "fastapi", "streamlit"],
+    "node": ["nextjs", "react", "vue", "svelte", "solidjs", "remix", "astro",
+             "express", "nestjs", "hono"],
+    "rust": ["axum", "actix", "rocket"],
+    "go": ["gin", "fiber", "echo"],
+    "elixir": ["phoenix"],
+    "java": ["spring"],
+    "php": ["laravel"],
+    "dart": ["flutter"],
+    "ruby": [], "dotnet": [], "swift": [], "zig": [], "scala": [],
+}
+
+_DEPLOY_OPTIONS = ["docker", "vercel", "render", "fly.io", "github_actions", "gitlab_ci"]
+
+_STACK_DISPLAY = {
+    "python": "Python", "node": "Node.js/TypeScript", "rust": "Rust",
+    "go": "Go", "ruby": "Ruby", "java": "Java/Kotlin", "php": "PHP",
+    "dotnet": ".NET", "elixir": "Elixir", "swift": "Swift",
+    "dart": "Dart/Flutter", "zig": "Zig", "scala": "Scala",
+}
+
+
+def _pick_multi(prompt: str, options: list[str], display: dict | None = None) -> list[str]:
+    """Show numbered list, accept comma-separated input. Enter to skip."""
+    print(f"\n  {prompt}")
+    for i, opt in enumerate(options, 1):
+        label = display.get(opt, opt) if display else opt
+        print(f"    {i:>2}) {label}")
+    print(f"    Enter) skip")
+    raw = _safe_input("  Choice (e.g. 1,3,5): ", default="").strip()
+    if not raw:
+        return []
+    selected = []
+    for part in raw.replace(" ", "").split(","):
+        try:
+            idx = int(part) - 1
+            if 0 <= idx < len(options):
+                selected.append(options[idx])
+        except ValueError:
+            part_lower = part.lower()
+            for opt in options:
+                if opt.lower() == part_lower:
+                    selected.append(opt)
+                    break
+    return list(dict.fromkeys(selected))
+
+
+def run_wizard(info: dict) -> dict:
+    """Interactive wizard for empty/new projects. Injects answers into info dict."""
+    print("  No code detected — starting project wizard.")
+    print("  Answer a few questions to generate contextual docs.")
+    print("  Press Enter to skip any question.\n")
+
+    # 1. Description
+    desc = _safe_input("  Project description (one line): ", default="").strip()
+    if desc:
+        info["description"] = desc
+
+    # 2. Stacks
+    stack_keys = list(_STACK_DISPLAY.keys())
+    chosen_stacks = _pick_multi("Which language(s)/runtime(s)?", stack_keys, _STACK_DISPLAY)
+    if chosen_stacks:
+        info["stacks"] = chosen_stacks
+
+    # 3. Frameworks — filtered by chosen stacks
+    available_frameworks = []
+    for s in info["stacks"]:
+        available_frameworks.extend(_FRAMEWORKS_BY_STACK.get(s, []))
+    available_frameworks = list(dict.fromkeys(available_frameworks))
+    if available_frameworks:
+        chosen_frameworks = _pick_multi("Which framework(s)?", available_frameworks)
+        if chosen_frameworks:
+            info["frameworks"] = chosen_frameworks
+
+    # 4. Deploy
+    chosen_deploy = _pick_multi("Deploy target(s)?", _DEPLOY_OPTIONS)
+    if chosen_deploy:
+        info["deploy"] = chosen_deploy
+
+    # 5. Monorepo
+    if len(info["stacks"]) > 1 or "node" in info["stacks"]:
+        mono = _safe_input("\n  Is this a monorepo? [y/N]: ", default="n").strip().lower()
+        if mono in ("y", "yes", "s", "sim"):
+            info["is_monorepo"] = True
+            tool = _safe_input("  Monorepo tool (turborepo/nx/pnpm/lerna) [Enter to skip]: ", default="").strip().lower()
+            if tool in ("turborepo", "nx", "pnpm", "lerna"):
+                info["monorepo_tool"] = tool
+
+    has_config = bool(info["stacks"] or info["frameworks"] or info["description"])
+    if has_config:
+        if "existing_content" not in info:
+            info["existing_content"] = {}
+        info["existing_content"].setdefault("sources", set()).add("wizard")
+        info["is_empty"] = False
+
+        print()
+        print("  ─── Wizard summary ───")
+        if info["description"]:
+            print(f"  Description: {info['description']}")
+        if info["stacks"]:
+            print(f"  Stacks: {', '.join(info['stacks'])}")
+        if info["frameworks"]:
+            print(f"  Frameworks: {', '.join(info['frameworks'])}")
+        if info["deploy"]:
+            print(f"  Deploy: {', '.join(info['deploy'])}")
+        if info["is_monorepo"]:
+            print(f"  Monorepo: {info['monorepo_tool'] or 'yes'}")
+        print("  ──────────────────────\n")
+    else:
+        print("\n  All questions skipped — generating generic templates.\n")
+
+    return info
+
+
+def run(target: Path, dry_run: bool = False, force: bool = False,
+        no_git_check: bool = False, with_readme: bool = False,
+        git_mode: str = "ask", interactive: bool = True):
+
+    target = target.resolve()
+
+    # Handle missing target
+    target_exists = target.exists()
+    if not target_exists:
+        if dry_run:
+            # Dry-run + missing target: treat as empty project, no warning
+            pass
+        else:
+            print(f"Creating directory: {target}")
+            target.mkdir(parents=True, exist_ok=True)
+            target_exists = True
+
+    print(f"\n{'=' * 60}")
+    print(f"  super-claude v1.0")
+    print(f"  Target: {target}")
+    mode_label = "DRY RUN" if dry_run else "LIVE"
+    if not interactive:
+        mode_label += " (non-interactive)"
+    print(f"  Mode:   {mode_label}")
+    print(f"{'=' * 60}\n")
+
+    # Build file list
+    files_to_generate = list(DEFAULT_FILES)
+    if with_readme:
+        files_to_generate.append(("README.md", generate_readme_md))
+
+    filenames = [f[0] for f in files_to_generate]
+
+    # ── Scan FIRST — before git safety ──
+    # Content must be read from the current working tree, not from
+    # whatever is in the last commit. Stashing before scan would
+    # cause generated files to be based on stale committed content.
+    if target_exists:
+        info = scan_directory(target)
+    else:
+        info = _empty_scan_result(target)
+
+    # ── Interactive wizard for empty projects ──
+    needs_wizard = info["is_empty"] and not info["stacks"]
+    if needs_wizard and interactive and not dry_run:
+        info = run_wizard(info)
+    elif needs_wizard and not interactive:
+        print("  Project: EMPTY (use interactive mode for guided setup)\n")
+
+    # ── Tier detection (after wizard so it sees wizard answers) ──
+    info["tier"] = detect_project_tier(info)
+
+    ec = info.get("existing_content", {})
+
+    # ── Compute write plan before any mutation ──
+    write_plan = []
+    for filename, generator in files_to_generate:
+        exists = target_exists and (target / filename).exists()
+        if exists and not force:
+            write_plan.append(PlannedWrite(filename, exists, "skip", reason="exists"))
+        elif exists and force:
+            write_plan.append(PlannedWrite(filename, exists, "overwrite"))
+        else:
+            write_plan.append(PlannedWrite(filename, exists, "create"))
+
+    overwrite_targets = [pw.filename for pw in write_plan if pw.mode == "overwrite"]
+
+    # ── Git safety — only when there are real overwrite targets ──
+    result = RunResult()
+
+    if not no_git_check and not dry_run and overwrite_targets:
+        git_action = run_git_safety(target, git_mode, overwrite_targets, interactive)
+        result.git_action = git_action
+        if git_action == "aborted":
+            return result
+        print()
+    else:
+        result.git_action = "no-git" if no_git_check else "skipped"
+
+    # ── Report ──
+    if info["is_empty"]:
+        print("  Project: EMPTY — creating template structure\n")
+    elif info["file_count"] == 0 and info["stacks"]:
+        # Wizard-configured: no files yet but user told us what they're building
+        print(f"  Project: NEW (configured via wizard)")
+        print(f"  Stacks: {', '.join(info['stacks'])}")
+        if info["frameworks"]:
+            print(f"  Frameworks: {', '.join(info['frameworks'])}")
+        tier = info["tier"]
+        print(f"  Suggested tier: T{tier['tier']} ({tier['confidence']} confidence)")
+        if info["deploy"]:
+            print(f"  Deploy: {', '.join(info['deploy'])}")
+        if info["is_monorepo"]:
+            print(f"  Monorepo: {info['monorepo_tool'] or 'yes'}")
+        print()
+    else:
+        print(f"  Project: EXISTING ({info['file_count']} files)")
+        print(f"  Stacks: {', '.join(info['stacks']) or 'none'}")
+        print(f"  Frameworks: {', '.join(info['frameworks']) or 'none'}")
+        tier = info["tier"]
+        print(f"  Suggested tier: T{tier['tier']} ({tier['confidence']} confidence)")
+        if info["deploy"]:
+            print(f"  Deploy: {', '.join(info['deploy'])}")
+        if info["is_monorepo"]:
+            print(f"  Monorepo: {info['monorepo_tool']} ({', '.join(info['workspace_dirs']) or 'no workspace dirs'})")
+        if info["existing_docs"]:
+            print(f"  Docs: {', '.join(info['existing_docs'])}")
+        if info["sub_projects"]:
+            print(f"  Sub-projects: {', '.join(info['sub_projects'][:10])}")
+            if len(info["sub_projects"]) > 10:
+                print(f"    ... and {len(info['sub_projects']) - 10} more")
+
+        sources = ec.get("sources", set())
+        if sources:
+            print(f"  Extracted from: {', '.join(sorted(sources))}")
+        print()
+
+    # ── Generate — driven by write plan ──
+    generators = {fn: gen for fn, gen in files_to_generate}
+    for pw in write_plan:
+        if pw.mode == "skip":
+            result.actions.append(FileAction(pw.filename, "skip", reason=pw.reason))
+            continue
+
+        content = generators[pw.filename](info)
+        line_count = content.count("\n")
+
+        if not dry_run:
+            (target / pw.filename).write_text(content, encoding="utf-8")
+
+        result.actions.append(FileAction(pw.filename, pw.mode, lines=line_count))
+
+    # Memory directory
+    mem = target / ".claude" / "projects"
+    if not dry_run and target_exists and not mem.exists():
+        mem.mkdir(parents=True, exist_ok=True)
+        result.actions.append(FileAction(".claude/projects/", "create"))
+    elif dry_run and (not target_exists or not mem.exists()):
+        result.actions.append(FileAction(".claude/projects/", "create"))
+
+    # ── Output ──
+    print("─" * 50)
+    for a in result.actions:
+        label = a.action.upper()
+        if dry_run and a.action != "skip":
+            label += " [DRY RUN]"
+        extra = f" ({a.lines} lines)" if a.lines else ""
+        reason = f" — {a.reason}" if a.reason else ""
+        print(f"  {label:<20s} {a.filename}{extra}{reason}")
+    print("─" * 50)
+
+    print(f"\n  Created: {result.created_count}  Skipped: {result.skipped_count}")
+
+    if result.skipped_count and not force:
+        print(f"\n  Tip: Use --force to overwrite existing files")
+
+    if "README.md" not in filenames:
+        print(f"  Note: README.md not included (use --with-readme to generate)")
+
+    if not dry_run and result.created_count > 0:
+        print(f"\n  Next steps:")
+        print(f"  1. Review generated files — sections containing 'placeholder' need input")
+        print(f"  2. Sections containing 'migrated' came from existing files — verify accuracy")
+        print(f"  3. Sections containing 'inferred' were detected — may need correction")
+
+        if info["has_git"]:
+            gen_files = [a.filename for a in result.actions
+                         if a.action in ("create", "overwrite") and "/" not in a.filename]
+            if gen_files:
+                print(f"\n  Git tip:")
+                print(f"    git add {' '.join(gen_files)}")
+                print(f"    git commit -m 'docs: bootstrap Claude Code knowledge architecture'")
+
+            if result.git_action == "stash":
+                print(f"\n  Don't forget: your previous changes are stashed.")
+                print(f"    git stash pop   # restore stashed changes")
+
+    print()
+    return result
+
+
+def plan_json(target: Path, with_readme: bool = False) -> dict:
+    """Compute full project analysis without writing files. Returns JSON-serializable dict."""
+    target = target.resolve()
+
+    files_to_generate = list(DEFAULT_FILES)
+    if with_readme:
+        files_to_generate.append(("README.md", generate_readme_md))
+
+    if target.exists():
+        info = scan_directory(target)
+    else:
+        info = _empty_scan_result(target)
+
+    info["tier"] = detect_project_tier(info)
+
+    # Compute write plan
+    write_plan = []
+    for filename, _ in files_to_generate:
+        exists = target.exists() and (target / filename).exists()
+        write_plan.append({
+            "filename": filename,
+            "exists": exists,
+            "mode": "skip" if exists else "create",
+        })
+
+    # Git status
+    git_info = git_check(target) if target.exists() else {
+        "is_git": False, "dirty": False, "branch": "",
+    }
+    git_recommendation = "skip"
+    if git_info.get("is_git"):
+        any_overwrite = any(wp["exists"] for wp in write_plan)
+        if git_info.get("dirty") and any_overwrite:
+            git_recommendation = "stash"
+        elif any_overwrite:
+            git_recommendation = "safe"
+        else:
+            git_recommendation = "skip"
+
+    # Build output — only JSON-serializable types
+    ec = info.get("existing_content", {})
+    sources = list(ec.get("sources", set()))
+
+    return {
+        "target": str(target),
+        "name": info["name"],
+        "stacks": info["stacks"],
+        "frameworks": info["frameworks"],
+        "deploy": info.get("deploy", []),
+        "is_monorepo": info.get("is_monorepo", False),
+        "monorepo_tool": info.get("monorepo_tool", ""),
+        "workspace_dirs": info.get("workspace_dirs", []),
+        "tier": info["tier"],
+        "file_count": info.get("file_count", 0),
+        "has_git": info.get("has_git", False),
+        "existing_docs": info.get("existing_docs", []),
+        "sub_projects": info.get("sub_projects", []),
+        "extracted_from": sources,
+        "write_plan": write_plan,
+        "git": {
+            "is_git": git_info.get("is_git", False),
+            "dirty": git_info.get("dirty", False),
+            "branch": git_info.get("branch", ""),
+            "recommendation": git_recommendation,
+        },
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bootstrap Claude Code Knowledge Architecture in a project directory.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  super-claude                        # interactive setup
+  super-claude /path/to/repo          # specific directory
+  super-claude --dry-run              # preview
+  super-claude --force --yes          # overwrite, no prompts
+  super-claude --with-readme          # also generate README.md
+  super-claude --git-mode stash       # auto-stash, no prompt
+  super-claude --git-mode skip --yes  # full automation
+  super-claude --plan-json            # output project analysis as JSON
+        """,
+    )
+    parser.add_argument("target", nargs="?", default=".", help="Target directory (default: current)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files")
+    parser.add_argument("--yes", "-y", action="store_true", help="Accept defaults, no interactive prompts")
+    parser.add_argument("--with-readme", action="store_true", help="Include README.md in generated files")
+    parser.add_argument("--no-git-check", action="store_true", help="Skip git safety entirely")
+    parser.add_argument("--git-mode", choices=["ask", "stash", "skip"], default="ask",
+                        help="Git safety mode: ask (interactive), stash (auto), skip (none)")
+    parser.add_argument("--plan-json", action="store_true",
+                        help="Output project analysis as JSON without writing files")
+
+    args = parser.parse_args()
+
+    if args.plan_json:
+        result = plan_json(Path(args.target), with_readme=args.with_readme)
+        print(json.dumps(result, indent=2))
+        return
+
+    interactive = not args.yes
+    git_mode = args.git_mode
+    if args.no_git_check:
+        git_mode = "skip"
+    elif args.yes and git_mode == "ask":
+        git_mode = "stash"  # --yes with default git-mode → auto-stash
+
+    run(
+        Path(args.target),
+        dry_run=args.dry_run,
+        force=args.force,
+        no_git_check=args.no_git_check,
+        with_readme=args.with_readme,
+        git_mode=git_mode,
+        interactive=interactive,
+    )
+
+
+if __name__ == "__main__":
+    main()
