@@ -29,7 +29,7 @@ import { execSync } from "child_process";
 import readline from "readline";
 import os from "os";
 
-const __version__ = "1.4.0";
+const __version__ = "1.5.0";
 
 // ─────────────────────────────────────────────
 // Constants
@@ -2511,6 +2511,7 @@ async function run(target, opts = {}) {
     reconfigure = false, forceAll = false, fromDoc = null,
     cleanRoot = false, templateDir = null,
     agents = null, outputFormat = "markdown",
+    pluginDir = null,
   } = opts;
   let { withRalph = false } = opts;
 
@@ -2747,6 +2748,15 @@ async function run(target, opts = {}) {
     result.actions.push(...agentActions);
   }
 
+  // Plugin extensions
+  const pluginDirPath = opts.pluginDir || path.join(target, ".claude-primer", "plugins");
+  const plugins = await loadPlugins(pluginDirPath);
+  if (plugins.length) {
+    console.log(`  Plugins: ${plugins.length} loaded from ${pluginDirPath}`);
+    const pluginActions = await runPlugins(target, info, plugins, dryRun);
+    result.actions.push(...pluginActions);
+  }
+
   // Memory directory
   const mem = path.join(target, ".claude", "projects");
   if (!dryRun && targetExists && !existsSync(mem)) {
@@ -2815,6 +2825,51 @@ async function run(target, opts = {}) {
 
   console.log();
   return result;
+}
+
+// ─────────────────────────────────────────────
+// Plugin system
+// ─────────────────────────────────────────────
+
+async function loadPlugins(pluginDir) {
+  const plugins = [];
+  if (!fs.existsSync(pluginDir) || !fs.statSync(pluginDir).isDirectory()) return plugins;
+  const files = fs.readdirSync(pluginDir).filter(f => f.endsWith(".mjs")).sort();
+  for (const f of files) {
+    try {
+      const mod = await import(path.resolve(pluginDir, f));
+      if (typeof mod.default === "function") {
+        plugins.push({ name: f, generate: mod.default });
+      }
+    } catch (e) {
+      console.log(`  Warning: plugin ${f} failed to load: ${e.message}`);
+    }
+  }
+  return plugins;
+}
+
+async function runPlugins(target, info, plugins, dryRun = false) {
+  const actions = [];
+  for (const plugin of plugins) {
+    try {
+      let result = await plugin.generate(info);
+      if (!Array.isArray(result)) result = [result];
+      for (const item of result) {
+        if (!item.filename || !item.content) continue;
+        const filepath = path.join(target, item.filename);
+        const exists = fs.existsSync(filepath);
+        if (!dryRun) {
+          fs.mkdirSync(path.dirname(filepath), { recursive: true });
+          fs.writeFileSync(filepath, item.content, "utf-8");
+        }
+        actions.push({ filename: item.filename, action: exists ? "overwrite" : "create",
+                       lines: item.content.split("\n").length });
+      }
+    } catch (e) {
+      console.log(`  Warning: plugin ${plugin.name} failed: ${e.message}`);
+    }
+  }
+  return actions;
 }
 
 // ─────────────────────────────────────────────
@@ -3326,6 +3381,11 @@ function parseArgs(argv) {
           args.format = argv[i];
         }
         break;
+      case "--plugin-dir":
+        i++;
+        args.pluginDir = argv[i] || null;
+        break;
+      case "--telemetry-off": args.telemetryOff = true; break;
       case "--help": case "-h":
         console.log(`claude-primer — Claude Code Knowledge Architecture Bootstrap
 
@@ -3349,7 +3409,9 @@ Usage:
   claude-primer --watch-interval <secs>    # polling interval (default: 5)
   claude-primer --watch-auto               # auto-regenerate on change
   claude-primer --agent <agents>           # target: claude,cursor,copilot,windsurf,aider,codex,all
-  claude-primer --format markdown|yaml|json # output format for agent files`);
+  claude-primer --format markdown|yaml|json # output format for agent files
+  claude-primer --plugin-dir <dir>         # plugin generators directory
+  claude-primer --telemetry-off            # disable telemetry`);
         process.exit(0);
         break;
       default:
@@ -3367,12 +3429,65 @@ Usage:
 // Main entry point
 // ─────────────────────────────────────────────
 
+function collectTelemetry(args, info, durationMs) {
+  const flags = [];
+  if (args.dryRun) flags.push("dry-run");
+  if (args.force) flags.push("force");
+  if (args.forceAll) flags.push("force-all");
+  if (args.withReadme) flags.push("with-readme");
+  if (args.withRalph) flags.push("with-ralph");
+  if (args.noGitCheck) flags.push("no-git-check");
+  if (args.planJsonFlag) flags.push("plan-json");
+  if (args.reconfigure) flags.push("reconfigure");
+  if (args.cleanRoot) flags.push("clean-root");
+  if (args.watch) flags.push("watch");
+  if (args.watchAuto) flags.push("watch-auto");
+  if (args.agent) flags.push(`agent=${args.agent}`);
+  if (args.format !== "markdown") flags.push(`format=${args.format}`);
+  if (args.templateDir) flags.push("template-dir");
+  if (args.pluginDir) flags.push("plugin-dir");
+
+  return {
+    v: 1,
+    tool_version: __version__,
+    command: args.planJsonFlag ? "plan-json" : (args.watch ? "watch" : "run"),
+    flags,
+    stacks: info.stacks || [],
+    frameworks: info.frameworks || [],
+    tier: info.tier?.tier ?? null,
+    is_monorepo: info.is_monorepo || false,
+    file_count: info.file_count || 0,
+    duration_s: Math.round(durationMs / 1000 * 100) / 100,
+    platform: process.platform,
+  };
+}
+
+function sendTelemetryIfEnabled(args, info, durationMs) {
+  if (process.env.CLAUDE_PRIMER_TELEMETRY !== "1") return;
+  if (args.telemetryOff) return;
+
+  const url = process.env.CLAUDE_PRIMER_TELEMETRY_URL ||
+              "https://telemetry.claude-primer.dev/v1/events";
+  const payload = collectTelemetry(args, info, durationMs);
+
+  try {
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => {}); // best-effort
+  } catch { /* ignore */ }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const _t0 = Date.now();
 
   if (args.planJsonFlag) {
     const result = planJson(args.target, args.withReadme);
     console.log(JSON.stringify(result, null, 2));
+    sendTelemetryIfEnabled(args, {}, Date.now() - _t0);
     return;
   }
 
@@ -3434,7 +3549,10 @@ async function main() {
     templateDir: args.templateDir,
     agents,
     outputFormat: args.format,
+    pluginDir: args.pluginDir,
   });
+
+  sendTelemetryIfEnabled(args, {}, Date.now() - _t0);
 }
 
 main().catch((err) => {

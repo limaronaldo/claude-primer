@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting Started — Claude Primer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid; }
+    nav a { text-decoration: none; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/claude-primer/"><strong>Claude Primer</strong></a>
+    <a href="/claude-primer/guides/getting-started.html">Getting Started</a>
+    <a href="/claude-primer/guides/templates.html">Templates</a>
+    <a href="/claude-primer/guides/watch-mode.html">Watch Mode</a>
+    <a href="/claude-primer/guides/multi-agent.html">Multi-Agent</a>
+    <a href="/claude-primer/guides/plugins.html">Plugins</a>
+    <a href="/claude-primer/guides/cli-reference.html">CLI Reference</a>
+  </nav>
+
+  <h1>Getting Started</h1>
+
+  <h2>Installation</h2>
+  <p>Choose the method that works best for your environment:</p>
+
+  <h3>Zero-install (recommended)</h3>
+  <pre><code># Python (pipx)
+pipx run claude-primer
+
+# Python (uvx)
+uvx claude-primer
+
+# Node.js
+npx claude-primer</code></pre>
+
+  <h3>Standalone binary</h3>
+  <pre><code># Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.ps1 | iex</code></pre>
+
+  <h3>Package managers</h3>
+  <pre><code># macOS
+brew install limaronaldo/tap/claude-primer
+
+# Windows (Scoop)
+scoop bucket add limaronaldo https://github.com/limaronaldo/scoop-bucket
+scoop install claude-primer
+
+# pip (global install)
+pip install claude-primer</code></pre>
+
+  <h3>Docker</h3>
+  <pre><code>docker run --rm -v "$(pwd):/project" ghcr.io/limaronaldo/claude-primer</code></pre>
+
+  <h2>Basic Usage</h2>
+  <pre><code># Interactive setup in current directory
+claude-primer
+
+# Specific directory, non-interactive
+claude-primer /path/to/project --yes
+
+# Preview without writing
+claude-primer --dry-run
+
+# Overwrite existing files (skip unchanged)
+claude-primer --force --yes
+
+# Output project analysis as JSON
+claude-primer --plan-json</code></pre>
+
+  <h2>What Happens</h2>
+  <ol>
+    <li><strong>Scan</strong> &mdash; Detects languages, frameworks, deploy targets, and monorepo structure</li>
+    <li><strong>Git safety</strong> &mdash; Checks for uncommitted changes (configurable via <code>--git-mode</code>)</li>
+    <li><strong>Generate</strong> &mdash; Creates CLAUDE.md, STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md</li>
+    <li><strong>Verify</strong> &mdash; Confirms all files were written correctly</li>
+  </ol>
+
+  <h2>Next Steps</h2>
+  <ul>
+    <li><a href="/claude-primer/guides/templates.html">Customize output with templates</a></li>
+    <li><a href="/claude-primer/guides/watch-mode.html">Auto-regenerate with watch mode</a></li>
+    <li><a href="/claude-primer/guides/multi-agent.html">Generate context for other AI tools</a></li>
+    <li><a href="/claude-primer/guides/plugins.html">Extend with custom plugins</a></li>
+    <li><a href="/claude-primer/guides/cli-reference.html">Full CLI reference</a></li>
+  </ul>
+
+  <footer>
+    <p>Claude Primer &mdash; <a href="https://github.com/limaronaldo/claude-primer">GitHub</a> &mdash; MIT License</p>
+  </footer>
+</body>
+</html>

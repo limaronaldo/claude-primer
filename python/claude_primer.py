@@ -35,7 +35,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # ─────────────────────────────────────────────
 # Constants
@@ -1217,6 +1217,54 @@ _TEMPLATE_FILE_MAP = {
     "quickstart.md": "QUICKSTART.md",
     "errors.md": "ERRORS_AND_LESSONS.md",
 }
+
+
+def load_plugins(plugin_dir: Path) -> list:
+    """Load plugin generators from a directory.
+
+    Each .py file must define a generate(info) function returning
+    {"filename": str, "content": str} or a list thereof.
+    """
+    plugins = []
+    if not plugin_dir.is_dir():
+        return plugins
+    import importlib.util
+    for f in sorted(plugin_dir.iterdir()):
+        if f.suffix == ".py" and f.is_file():
+            spec = importlib.util.spec_from_file_location(f.stem, str(f))
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+                if hasattr(mod, "generate"):
+                    plugins.append({"name": f.name, "generate": mod.generate})
+            except Exception as e:
+                print(f"  Warning: plugin {f.name} failed to load: {e}")
+    return plugins
+
+
+def run_plugins(target: Path, info: dict, plugins: list, dry_run: bool = False) -> list:
+    """Execute plugins and write their output files."""
+    actions = []
+    for plugin in plugins:
+        try:
+            result = plugin["generate"](info)
+            if isinstance(result, dict):
+                result = [result]
+            for item in result:
+                fn = item.get("filename", "")
+                content = item.get("content", "")
+                if not fn or not content:
+                    continue
+                filepath = target / fn
+                exists = filepath.exists()
+                if not dry_run:
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    filepath.write_text(content, encoding="utf-8")
+                actions.append(FileAction(fn, "overwrite" if exists else "create",
+                                        lines=content.count("\n")))
+        except Exception as e:
+            print(f"  Warning: plugin {plugin['name']} failed: {e}")
+    return actions
 
 
 def load_templates(template_dir: Path) -> dict:
@@ -2719,7 +2767,8 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
         interactive: bool = True, reconfigure: bool = False,
         force_all: bool = False, from_doc: Optional[str] = None,
         clean_root: bool = False, template_dir: Optional[str] = None,
-        agents: Optional[list] = None, output_format: str = "markdown"):
+        agents: Optional[list] = None, output_format: str = "markdown",
+        plugin_dir: Optional[str] = None):
 
     target = target.resolve()
 
@@ -2962,6 +3011,14 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     if agents:
         agent_actions = write_agent_files(target, info, agents, fmt=output_format, dry_run=dry_run)
         result.actions.extend(agent_actions)
+
+    # ── Plugin extensions ──
+    plugin_dir_path = Path(plugin_dir) if plugin_dir else target / ".claude-primer" / "plugins"
+    plugins = load_plugins(plugin_dir_path)
+    if plugins:
+        print(f"  Plugins: {len(plugins)} loaded from {plugin_dir_path}")
+        plugin_actions = run_plugins(target, info, plugins, dry_run=dry_run)
+        result.actions.extend(plugin_actions)
 
     # Memory directory
     mem = target / ".claude" / "projects"
@@ -3498,6 +3555,8 @@ def main():
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+    import time as _time
+
     parser = argparse.ArgumentParser(
         description="Bootstrap Claude Code Knowledge Architecture in a project directory.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3548,12 +3607,19 @@ Examples:
                         help="Target agent(s): claude, cursor, copilot, windsurf, aider, codex, all (comma-separated)")
     parser.add_argument("--format", type=str, default="markdown", choices=["markdown", "yaml", "json"],
                         help="Output format for agent context files (default: markdown)")
+    parser.add_argument("--plugin-dir", type=str, default=None,
+                        help="Directory containing plugin generators (default: .claude-primer/plugins/)")
+    parser.add_argument("--telemetry-off", action="store_true",
+                        help="Disable telemetry even if CLAUDE_PRIMER_TELEMETRY=1 is set")
 
     args = parser.parse_args()
+
+    _t0 = _time.monotonic()
 
     if args.plan_json:
         result = plan_json(Path(args.target), with_readme=args.with_readme)
         print(json.dumps(result, indent=2))
+        _send_telemetry_if_enabled(args, {}, _time.monotonic() - _t0)
         return
 
     # Parse agent list
@@ -3612,7 +3678,70 @@ Examples:
         template_dir=args.template_dir,
         agents=agents,
         output_format=args.format,
+        plugin_dir=args.plugin_dir,
     )
+
+    _send_telemetry_if_enabled(args, {}, _time.monotonic() - _t0)
+
+
+def _collect_telemetry(args, info: dict, duration_s: float) -> dict:
+    """Collect anonymous telemetry payload. No PII, no project content."""
+    flags = []
+    for flag in ["dry_run", "force", "force_all", "with_readme", "with_ralph",
+                  "no_git_check", "plan_json", "reconfigure", "clean_root",
+                  "watch", "watch_auto"]:
+        if getattr(args, flag, False):
+            flags.append(flag.replace("_", "-"))
+    if getattr(args, "agent", None):
+        flags.append(f"agent={args.agent}")
+    if getattr(args, "format", "markdown") != "markdown":
+        flags.append(f"format={args.format}")
+    if getattr(args, "template_dir", None):
+        flags.append("template-dir")
+    if getattr(args, "plugin_dir", None):
+        flags.append("plugin-dir")
+
+    return {
+        "v": 1,
+        "tool_version": __version__,
+        "command": "plan-json" if getattr(args, "plan_json", False)
+                   else ("watch" if getattr(args, "watch", False) else "run"),
+        "flags": flags,
+        "stacks": info.get("stacks", []),
+        "frameworks": info.get("frameworks", []),
+        "tier": info.get("tier", {}).get("tier") if isinstance(info.get("tier"), dict) else None,
+        "is_monorepo": info.get("is_monorepo", False),
+        "file_count": info.get("file_count", 0),
+        "duration_s": round(duration_s, 2),
+        "platform": sys.platform,
+    }
+
+
+def _send_telemetry_if_enabled(args, info: dict, duration_s: float):
+    """Send telemetry if opt-in env var is set and --telemetry-off is not used."""
+    if os.environ.get("CLAUDE_PRIMER_TELEMETRY") != "1":
+        return
+    if getattr(args, "telemetry_off", False):
+        return
+
+    import threading
+    import urllib.request
+
+    payload = _collect_telemetry(args, info, duration_s)
+    url = os.environ.get("CLAUDE_PRIMER_TELEMETRY_URL",
+                         "https://telemetry.claude-primer.dev/v1/events")
+
+    def _post():
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data,
+                headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass  # best-effort
+
+    t = threading.Thread(target=_post, daemon=True)
+    t.start()
 
 
 if __name__ == "__main__":

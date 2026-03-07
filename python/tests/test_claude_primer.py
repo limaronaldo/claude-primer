@@ -1327,3 +1327,129 @@ class TestMultiAgentOutput:
         r = run_setup(".", "--agent", "invalid_agent")
         assert r.returncode != 0
         assert "Unknown agent" in r.stderr
+
+
+# ─────────────────────────────────────────────
+# Plugin system
+# ─────────────────────────────────────────────
+
+class TestPluginSystem:
+    def test_plugin_generates_file(self, python_project):
+        """Plugin should generate a custom file."""
+        plugin_dir = python_project / ".claude-primer" / "plugins"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "custom.py").write_text(
+            'def generate(info):\n'
+            '    return {"filename": "CUSTOM.md", "content": "# Custom\\n"}\n'
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        assert (python_project / "CUSTOM.md").exists()
+        assert (python_project / "CUSTOM.md").read_text() == "# Custom\n"
+
+    def test_plugin_dir_flag(self, python_project, tmp_path):
+        """--plugin-dir should load plugins from specified directory."""
+        plugin_dir = tmp_path / "my-plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "extra.py").write_text(
+            'def generate(info):\n'
+            '    return {"filename": "EXTRA.md", "content": "# Extra\\n"}\n'
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check",
+                       "--plugin-dir", str(plugin_dir))
+        assert r.returncode == 0
+        assert (python_project / "EXTRA.md").exists()
+
+    def test_plugin_multi_file(self, python_project):
+        """Plugin returning a list should generate multiple files."""
+        plugin_dir = python_project / ".claude-primer" / "plugins"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "multi.py").write_text(
+            'def generate(info):\n'
+            '    return [\n'
+            '        {"filename": "A.md", "content": "# A\\n"},\n'
+            '        {"filename": "B.md", "content": "# B\\n"},\n'
+            '    ]\n'
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        assert (python_project / "A.md").exists()
+        assert (python_project / "B.md").exists()
+
+    def test_plugin_receives_info(self, python_project):
+        """Plugin should receive the scan info dict with stacks."""
+        plugin_dir = python_project / ".claude-primer" / "plugins"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "check_info.py").write_text(
+            'def generate(info):\n'
+            '    assert "stacks" in info\n'
+            '    assert "frameworks" in info\n'
+            '    return {"filename": "INFO_OK.md", "content": "ok\\n"}\n'
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        assert (python_project / "INFO_OK.md").exists()
+
+    def test_broken_plugin_does_not_crash(self, python_project):
+        """A failing plugin should warn but not crash."""
+        plugin_dir = python_project / ".claude-primer" / "plugins"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "broken.py").write_text(
+            'def generate(info):\n    raise RuntimeError("boom")\n'
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        assert (python_project / "CLAUDE.md").exists()
+
+    def test_plugin_dir_help_flag(self):
+        """--plugin-dir should appear in help."""
+        r = run_setup("--help")
+        assert "--plugin-dir" in r.stdout
+
+
+# ─────────────────────────────────────────────
+# Telemetry
+# ─────────────────────────────────────────────
+
+class TestTelemetry:
+    def test_telemetry_not_sent_by_default(self, python_project):
+        """Without CLAUDE_PRIMER_TELEMETRY=1, CLI runs fine."""
+        env = os.environ.copy()
+        env.pop("CLAUDE_PRIMER_TELEMETRY", None)
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+
+    def test_telemetry_off_flag(self, python_project):
+        """--telemetry-off should suppress telemetry."""
+        r = run_setup(str(python_project), "--yes", "--no-git-check", "--telemetry-off")
+        assert r.returncode == 0
+
+    def test_telemetry_flag_in_help(self):
+        """--telemetry-off should appear in help."""
+        r = run_setup("--help")
+        assert "--telemetry-off" in r.stdout
+
+    def test_telemetry_collection_shape(self):
+        """Verify the telemetry payload shape."""
+        import sys as _sys
+        _sys.path.insert(0, str(SCRIPT.parent))
+        import claude_primer
+        from types import SimpleNamespace
+        args = SimpleNamespace(
+            dry_run=True, force=False, force_all=False, with_readme=False,
+            with_ralph=False, no_git_check=True, plan_json=False,
+            reconfigure=False, clean_root=False, watch=False, watch_auto=False,
+            agent=None, format="markdown", template_dir=None, plugin_dir=None,
+            telemetry_off=False,
+        )
+        info = {"stacks": ["python"], "frameworks": ["flask"],
+                "tier": {"tier": 3}, "is_monorepo": False, "file_count": 5}
+        payload = claude_primer._collect_telemetry(args, info, 1.23)
+        assert payload["v"] == 1
+        assert payload["stacks"] == ["python"]
+        assert "dry-run" in payload["flags"]
+        assert payload["duration_s"] == 1.23
+        assert "tool_version" in payload
+        # No PII
+        assert "root" not in payload
+        assert "name" not in payload

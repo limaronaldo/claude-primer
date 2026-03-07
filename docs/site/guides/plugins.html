@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plugin System — Claude Primer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid; }
+    nav a { text-decoration: none; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/claude-primer/"><strong>Claude Primer</strong></a>
+    <a href="/claude-primer/guides/getting-started.html">Getting Started</a>
+    <a href="/claude-primer/guides/templates.html">Templates</a>
+    <a href="/claude-primer/guides/watch-mode.html">Watch Mode</a>
+    <a href="/claude-primer/guides/multi-agent.html">Multi-Agent</a>
+    <a href="/claude-primer/guides/plugins.html">Plugins</a>
+    <a href="/claude-primer/guides/cli-reference.html">CLI Reference</a>
+  </nav>
+
+  <h1>Plugin System</h1>
+  <p>Register custom generators to produce additional files alongside built-in output.</p>
+
+  <h2>Setup</h2>
+  <pre><code>mkdir -p .claude-primer/plugins</code></pre>
+
+  <h2>Writing a Plugin (Python)</h2>
+  <p>Create a <code>.py</code> file with a <code>generate(info)</code> function:</p>
+  <pre><code># .claude-primer/plugins/api-docs.py
+
+def generate(info):
+    """Generate API documentation scaffold."""
+    stacks = ", ".join(info.get("stacks", []))
+    frameworks = ", ".join(info.get("frameworks", []))
+
+    return {
+        "filename": "API_DOCS.md",
+        "content": f"""# API Documentation
+
+## Tech Stack
+{stacks}
+
+## Frameworks
+{frameworks}
+
+## Endpoints
+
+<!-- Add your API endpoints here -->
+"""
+    }</code></pre>
+
+  <h2>Writing a Plugin (Node.js)</h2>
+  <p>Create a <code>.mjs</code> file with a default export function:</p>
+  <pre><code>// .claude-primer/plugins/api-docs.mjs
+
+export default function generate(info) {
+  return {
+    filename: "API_DOCS.md",
+    content: `# API Documentation\n\nStack: ${(info.stacks || []).join(", ")}\n`
+  };
+}</code></pre>
+
+  <h2>Multi-File Plugins</h2>
+  <p>Return an array to generate multiple files:</p>
+  <pre><code>def generate(info):
+    return [
+        {"filename": "docs/API.md", "content": "# API\n"},
+        {"filename": "docs/ARCHITECTURE.md", "content": "# Architecture\n"},
+    ]</code></pre>
+
+  <h2>Plugin Contract</h2>
+  <p>The <code>info</code> dict contains the full project scan result:</p>
+  <ul>
+    <li><code>info["name"]</code> &mdash; project directory name</li>
+    <li><code>info["stacks"]</code> &mdash; detected language stacks (list)</li>
+    <li><code>info["frameworks"]</code> &mdash; detected frameworks (list)</li>
+    <li><code>info["tier"]</code> &mdash; tier classification dict</li>
+    <li><code>info["deploy"]</code> &mdash; deploy targets (list)</li>
+    <li><code>info["is_monorepo"]</code> &mdash; boolean</li>
+    <li><code>info["existing_content"]</code> &mdash; extracted docs content</li>
+  </ul>
+
+  <h2>Error Handling</h2>
+  <p>If a plugin throws an exception, claude-primer prints a warning and continues with the remaining plugins and built-in generation. Your plugin will not crash the CLI.</p>
+
+  <h2>Custom Plugin Directory</h2>
+  <pre><code>claude-primer --plugin-dir path/to/my-plugins</code></pre>
+
+  <footer>
+    <p>Claude Primer &mdash; <a href="https://github.com/limaronaldo/claude-primer">GitHub</a> &mdash; MIT License</p>
+  </footer>
+</body>
+</html>
