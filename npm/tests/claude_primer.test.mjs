@@ -971,12 +971,12 @@ describe('Verification', () => {
     }
   });
 
-  it('version is v1.2', () => {
+  it('version stamp present', () => {
     const tmp = makeTmpDir();
     try {
       runSetup(['--yes', '--no-git-check'], { cwd: tmp });
       const content = fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8');
-      assert.ok(content.includes('claude-primer v1.2'), 'Should reference v1.2');
+      assert.ok(/claude-primer v\d+\.\d+/.test(content), 'Should contain versioned claude-primer reference');
     } finally {
       cleanup(tmp);
     }

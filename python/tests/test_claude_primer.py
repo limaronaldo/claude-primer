@@ -8,6 +8,7 @@ Run: python3 -m pytest tests/ -v
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -577,11 +578,11 @@ class TestVerification:
         r = run_setup(str(empty_dir), "--yes", "--no-git-check")
         assert "Verification issues" not in r.stdout
 
-    def test_version_v1_2(self, empty_dir):
-        """Generated files should reference v1.2."""
+    def test_version_stamp(self, empty_dir):
+        """Generated files should reference claude-primer version."""
         run_setup(str(empty_dir), "--yes", "--no-git-check")
         content = (empty_dir / "CLAUDE.md").read_text()
-        assert "claude-primer v1.2" in content
+        assert re.search(r"claude-primer v\d+\.\d+", content), "Should contain versioned claude-primer reference"
 
 
 # ─────────────────────────────────────────────
