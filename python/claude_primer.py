@@ -2847,6 +2847,9 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
             # --force: skip if content unchanged; --force-all: always overwrite
             if force and not force_all:
                 new_content = generator(info)
+                # Apply template overrides before diff check
+                if user_templates:
+                    new_content = merge_with_templates(new_content, user_templates, info.get("_template_vars", {}), filename)
                 _content_cache[filename] = new_content
                 old_content = actual_path.read_text(encoding="utf-8", errors="ignore")
                 if new_content == old_content:

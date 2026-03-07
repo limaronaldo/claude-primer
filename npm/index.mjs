@@ -1113,6 +1113,40 @@ function scanDirectory(root) {
     }
   }
 
+  // Confidence scoring
+  const scores = {};
+  const stackScores = [];
+  for (const stack of result.stacks) {
+    const signals = STACK_SIGNALS[stack] || {};
+    const foundFile = (signals.files || []).some(f => rootFiles.has(f));
+    stackScores.push({ value: stack, source: foundFile ? "root config file" : "file extensions", confidence: foundFile ? "high" : "medium" });
+  }
+  scores.stacks = stackScores;
+
+  const fwScores = [];
+  for (const fw of result.frameworks) {
+    const keywords = FRAMEWORK_SIGNALS[fw] || [];
+    const fromFile = keywords.some(kw => rootFiles.has(kw));
+    fwScores.push({ value: fw, source: fromFile ? "root file" : "dependency file keyword", confidence: fromFile ? "high" : "medium" });
+  }
+  scores.frameworks = fwScores;
+
+  if (result.description) {
+    const ecSources = (result.existing_content || {}).sources || new Set();
+    if (ecSources.has && ecSources.has("README.md")) {
+      scores.description = { value: result.description, source: "README.md", confidence: "medium" };
+    } else if (Object.keys(result.scripts || {}).length) {
+      scores.description = { value: result.description, source: "package.json", confidence: "high" };
+    } else {
+      scores.description = { value: result.description, source: "inferred", confidence: "low" };
+    }
+  }
+
+  const ecCmds = (result.existing_content || {}).commands || [];
+  scores.commands = ecCmds.map(cmd => ({ value: cmd, source: "extracted from docs", confidence: "medium" }));
+
+  result.confidence_scores = scores;
+
   return result;
 }
 
@@ -2475,7 +2509,8 @@ async function run(target, opts = {}) {
     dryRun = false, force = false, noGitCheck = false,
     withReadme = false, gitMode = "ask", interactive = true,
     reconfigure = false, forceAll = false, fromDoc = null,
-    cleanRoot = false,
+    cleanRoot = false, templateDir = null,
+    agents = null, outputFormat = "markdown",
   } = opts;
   let { withRalph = false } = opts;
 
@@ -2574,6 +2609,15 @@ async function run(target, opts = {}) {
   // Tier detection
   info.tier = detectProjectTier(info);
 
+  // Load user templates
+  const tplDir = templateDir || path.join(target, ".claude-primer", "templates");
+  const userTemplates = loadTemplates(tplDir);
+  if (Object.keys(userTemplates).length) {
+    info._templates = userTemplates;
+    info._templateVars = buildTemplateVariables(info);
+    console.log(`  Templates: loaded from ${tplDir}`);
+  }
+
   const ec = info.existing_content || {};
 
   // Write plan
@@ -2592,7 +2636,10 @@ async function run(target, opts = {}) {
       writePlan.push({ filename, exists, mode: "skip", reason: "exists", actualPath });
     } else if (exists && (force || forceAll)) {
       if (force && !forceAll) {
-        const newContent = generator(info);
+        let newContent = generator(info);
+        if (Object.keys(userTemplates).length) {
+          newContent = mergeWithTemplates(newContent, userTemplates, info._templateVars || {}, filename);
+        }
         contentCache[filename] = newContent;
         const oldContent = fs.readFileSync(actualPath, "utf-8");
         if (newContent === oldContent) {
@@ -2663,7 +2710,10 @@ async function run(target, opts = {}) {
       continue;
     }
 
-    const content = contentCache[pw.filename] || generators[pw.filename](info);
+    let content = contentCache[pw.filename] || generators[pw.filename](info);
+    if (Object.keys(userTemplates).length) {
+      content = mergeWithTemplates(content, userTemplates, info._templateVars || {}, pw.filename);
+    }
     const lineCount = content.split("\n").length;
     const writePath = pw.actualPath || path.join(target, pw.filename);
     if (!dryRun) {
@@ -2689,6 +2739,12 @@ async function run(target, opts = {}) {
   if (withRalph) {
     const ralphActions = setupRalph(target, info, dryRun, force);
     result.actions.push(...ralphActions);
+  }
+
+  // Multi-agent output
+  if (agents && agents.length) {
+    const agentActions = writeAgentFiles(target, info, agents, outputFormat, dryRun);
+    result.actions.push(...agentActions);
   }
 
   // Memory directory
@@ -2762,6 +2818,379 @@ async function run(target, opts = {}) {
 }
 
 // ─────────────────────────────────────────────
+// Template system
+// ─────────────────────────────────────────────
+
+const _TEMPLATE_FILE_MAP = {
+  "claude.md": "CLAUDE.md",
+  "standards.md": "STANDARDS.md",
+  "quickstart.md": "QUICKSTART.md",
+  "errors.md": "ERRORS_AND_LESSONS.md",
+};
+
+function loadTemplates(templateDir) {
+  const templates = {};
+  if (!existsSync(templateDir) || !fs.statSync(templateDir).isDirectory()) return templates;
+  for (const f of fs.readdirSync(templateDir)) {
+    if (!f.endsWith(".md")) continue;
+    const outputFile = _TEMPLATE_FILE_MAP[f.toLowerCase()] || f.toUpperCase();
+    const content = fs.readFileSync(path.join(templateDir, f), "utf-8");
+    const sections = extractMdSections(content);
+    if (Object.keys(sections).length) {
+      templates[outputFile] = {};
+      for (const [k, v] of Object.entries(sections)) templates[outputFile][k.toLowerCase()] = v;
+    } else if (content.trim()) {
+      templates[outputFile] = { "__full__": content };
+    }
+  }
+  return templates;
+}
+
+function buildTemplateVariables(info) {
+  const tier = info.tier || {};
+  return {
+    project_name: info.name || "",
+    tech_stack: (info.stacks || []).join(", "),
+    frameworks: (info.frameworks || []).join(", "),
+    tier: `T${tier.tier || 3}`,
+    deploy: (info.deploy || []).join(", "),
+    date: new Date().toISOString().slice(0, 10),
+    description: info.description || "",
+  };
+}
+
+function applyTemplateSubstitution(content, variables) {
+  for (const [key, val] of Object.entries(variables)) {
+    content = content.replaceAll(`{{${key}}}`, val);
+  }
+  return content;
+}
+
+function mergeWithTemplates(generated, templates, variables, outputFile) {
+  const fileTemplates = templates[outputFile];
+  if (!fileTemplates) return generated;
+  if (fileTemplates.__full__) return applyTemplateSubstitution(fileTemplates.__full__, variables);
+
+  const lines = generated.split("\n");
+  const result = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.startsWith("## ")) {
+      const header = line.slice(3).trim().toLowerCase();
+      if (header in fileTemplates) {
+        result.push(line);
+        i++;
+        while (i < lines.length && !lines[i].startsWith("## ") && !(lines[i].trim() === "---" && i + 1 < lines.length && lines[i + 1].startsWith("## "))) {
+          i++;
+        }
+        const templateBody = applyTemplateSubstitution(fileTemplates[header], variables);
+        result.push(templateBody.trimEnd());
+        result.push("");
+        continue;
+      }
+    }
+    result.push(line);
+    i++;
+  }
+  return result.join("\n");
+}
+
+// ─────────────────────────────────────────────
+// Multi-agent context output
+// ─────────────────────────────────────────────
+
+const AGENT_CONVENTIONS = {
+  claude: { file: "CLAUDE.md", dir: null },
+  cursor: { file: ".cursor/rules/project.mdc", dir: ".cursor/rules" },
+  copilot: { file: ".github/copilot-instructions.md", dir: ".github" },
+  windsurf: { file: ".windsurfrules", dir: null },
+  aider: { file: ".aider/conventions.md", dir: ".aider" },
+  codex: { file: "AGENTS.md", dir: null },
+};
+
+function agentCoreContext(info) {
+  const ec = info.existing_content || {};
+  const tier = info.tier || {};
+  return {
+    project_name: info.name || "",
+    description: info.description || ec.description || "",
+    stacks: info.stacks || [],
+    frameworks: info.frameworks || [],
+    deploy: info.deploy || [],
+    tier: `T${tier.tier || 3}`,
+    commands: ec.commands || [],
+    architecture: ec.architecture_notes || "",
+    env_notes: ec.env_notes || "",
+    formatting_rules: ec.formatting_rules || [],
+    test_dirs: info.test_dirs || [],
+    sub_projects: info.sub_projects || [],
+    is_monorepo: info.is_monorepo || false,
+  };
+}
+
+function generateCursorRules(info) {
+  const ctx = agentCoreContext(info);
+  const L = [
+    "---", `description: Project context for ${ctx.project_name}`,
+    'globs: ["**/*"]', "alwaysApply: true", "---", "",
+    `# ${ctx.project_name}`, "",
+  ];
+  if (ctx.description) L.push(ctx.description, "");
+  L.push("## Tech Stack", "", `- **Languages:** ${ctx.stacks.join(", ") || "not detected"}`,
+    `- **Frameworks:** ${ctx.frameworks.join(", ") || "none"}`);
+  if (ctx.deploy.length) L.push(`- **Deploy:** ${ctx.deploy.join(", ")}`);
+  L.push("");
+  if (ctx.commands.length) {
+    L.push("## Commands", "", "```bash");
+    for (const cmd of ctx.commands.slice(0, 15)) L.push(cmd);
+    L.push("```", "");
+  }
+  if (ctx.architecture) L.push("## Architecture", "", ctx.architecture.slice(0, 2000), "");
+  if (ctx.formatting_rules.length) {
+    L.push("## Code Style", "");
+    for (const r of ctx.formatting_rules.slice(0, 10)) L.push(`- ${r}`);
+    L.push("");
+  }
+  return L.join("\n") + "\n";
+}
+
+function generateCopilotInstructions(info) {
+  const ctx = agentCoreContext(info);
+  const L = [`# ${ctx.project_name} — Copilot Instructions`, ""];
+  if (ctx.description) L.push(ctx.description, "");
+  L.push("## Project Overview", "",
+    `- **Stack:** ${ctx.stacks.join(", ") || "not detected"}`,
+    `- **Frameworks:** ${ctx.frameworks.join(", ") || "none"}`,
+    `- **Tier:** ${ctx.tier}`, "");
+  if (ctx.commands.length) {
+    L.push("## Common Commands", "", "```bash");
+    for (const cmd of ctx.commands.slice(0, 15)) L.push(cmd);
+    L.push("```", "");
+  }
+  if (ctx.architecture) L.push("## Architecture", "", ctx.architecture.slice(0, 2000), "");
+  if (ctx.formatting_rules.length) {
+    L.push("## Coding Conventions", "");
+    for (const r of ctx.formatting_rules.slice(0, 10)) L.push(`- ${r}`);
+    L.push("");
+  }
+  return L.join("\n") + "\n";
+}
+
+function generateWindsurfRules(info) {
+  const ctx = agentCoreContext(info);
+  const L = [`# ${ctx.project_name} Rules`, ""];
+  if (ctx.description) L.push(ctx.description, "");
+  L.push(`Stack: ${ctx.stacks.join(", ") || "not detected"}`,
+    `Frameworks: ${ctx.frameworks.join(", ") || "none"}`, "");
+  if (ctx.commands.length) {
+    L.push("## Commands", "", "```bash");
+    for (const cmd of ctx.commands.slice(0, 15)) L.push(cmd);
+    L.push("```", "");
+  }
+  if (ctx.architecture) L.push("## Architecture", "", ctx.architecture.slice(0, 2000), "");
+  if (ctx.formatting_rules.length) {
+    L.push("## Style", "");
+    for (const r of ctx.formatting_rules.slice(0, 10)) L.push(`- ${r}`);
+    L.push("");
+  }
+  return L.join("\n") + "\n";
+}
+
+function generateAiderConventions(info) {
+  const ctx = agentCoreContext(info);
+  const L = [`# Conventions for ${ctx.project_name}`, "",
+    `**Stack:** ${ctx.stacks.join(", ") || "not detected"}`,
+    `**Frameworks:** ${ctx.frameworks.join(", ") || "none"}`, ""];
+  if (ctx.test_dirs.length) {
+    L.push("## Test Directories", "");
+    for (const td of ctx.test_dirs.slice(0, 10)) L.push(`- \`${td}/\``);
+    L.push("");
+  }
+  if (ctx.commands.length) {
+    L.push("## Key Commands", "", "```bash");
+    for (const cmd of ctx.commands.slice(0, 15)) L.push(cmd);
+    L.push("```", "");
+  }
+  if (ctx.formatting_rules.length) {
+    L.push("## Formatting", "");
+    for (const r of ctx.formatting_rules.slice(0, 10)) L.push(`- ${r}`);
+    L.push("");
+  }
+  if (ctx.architecture) L.push("## Architecture Notes", "", ctx.architecture.slice(0, 2000), "");
+  return L.join("\n") + "\n";
+}
+
+function generateCodexAgents(info) {
+  const ctx = agentCoreContext(info);
+  const L = ["# AGENTS.md", "", `## ${ctx.project_name}`, ""];
+  if (ctx.description) L.push(ctx.description, "");
+  L.push("## Workspace", "",
+    `- **Languages:** ${ctx.stacks.join(", ") || "not detected"}`,
+    `- **Frameworks:** ${ctx.frameworks.join(", ") || "none"}`);
+  if (ctx.is_monorepo) {
+    L.push("- **Monorepo:** yes");
+    if (ctx.sub_projects.length) L.push(`- **Sub-projects:** ${ctx.sub_projects.slice(0, 10).join(", ")}`);
+  }
+  L.push("");
+  if (ctx.commands.length) {
+    L.push("## Setup & Commands", "", "```bash");
+    for (const cmd of ctx.commands.slice(0, 15)) L.push(cmd);
+    L.push("```", "");
+  }
+  if (ctx.architecture) L.push("## Architecture", "", ctx.architecture.slice(0, 2000), "");
+  return L.join("\n") + "\n";
+}
+
+const AGENT_GENERATORS = {
+  cursor: generateCursorRules,
+  copilot: generateCopilotInstructions,
+  windsurf: generateWindsurfRules,
+  aider: generateAiderConventions,
+  codex: generateCodexAgents,
+};
+
+function writeAgentFiles(target, info, agents, fmt = "markdown", dryRun = false) {
+  const actions = [];
+  const ctx = agentCoreContext(info);
+  for (const agent of agents) {
+    if (agent === "claude") continue;
+    const conv = AGENT_CONVENTIONS[agent];
+    if (!conv) continue;
+    const generator = AGENT_GENERATORS[agent];
+    if (!generator) continue;
+
+    let content, filepath;
+    if (fmt === "markdown") {
+      content = generator(info);
+      filepath = path.join(target, conv.file);
+    } else if (fmt === "json") {
+      content = JSON.stringify(ctx, null, 2) + "\n";
+      filepath = path.join(target, `.claude-primer-${agent}.json`);
+    } else if (fmt === "yaml") {
+      const yamlLines = [];
+      for (const [k, v] of Object.entries(ctx)) {
+        if (Array.isArray(v)) {
+          if (!v.length) { yamlLines.push(`${k}: []`); continue; }
+          yamlLines.push(`${k}:`);
+          for (const item of v) yamlLines.push(`  - ${item}`);
+        } else if (typeof v === "boolean") {
+          yamlLines.push(`${k}: ${v}`);
+        } else {
+          yamlLines.push(`${k}: ${v}`);
+        }
+      }
+      content = yamlLines.join("\n") + "\n";
+      filepath = path.join(target, `.claude-primer-${agent}.yaml`);
+    } else continue;
+
+    const exists = existsSync(filepath);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(filepath), { recursive: true });
+      fs.writeFileSync(filepath, content, "utf-8");
+    }
+    actions.push({ filename: path.relative(target, filepath), action: exists ? "overwrite" : "create", lines: content.split("\n").length });
+  }
+  return actions;
+}
+
+// ─────────────────────────────────────────────
+// Watch mode
+// ─────────────────────────────────────────────
+
+const _WATCH_FILES = [
+  "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "mix.exs",
+  "pubspec.yaml", "composer.json", "build.gradle", "pom.xml", "build.sbt",
+  "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+  "README.md", "CLAUDE.md", "STANDARDS.md", ".env", ".env.example",
+  "requirements.txt", "Pipfile", "setup.py", "setup.cfg",
+];
+
+function getWatchTargets(root) {
+  const mtimes = {};
+  for (const f of _WATCH_FILES) {
+    const fp = path.join(root, f);
+    try { if (existsSync(fp)) mtimes[f] = fs.statSync(fp).mtimeMs; } catch {}
+  }
+  const wfDir = path.join(root, ".github", "workflows");
+  if (existsSync(wfDir) && fs.statSync(wfDir).isDirectory()) {
+    try {
+      for (const item of fs.readdirSync(wfDir)) {
+        if (item.endsWith(".yml") || item.endsWith(".yaml")) {
+          const rel = `.github/workflows/${item}`;
+          mtimes[rel] = fs.statSync(path.join(wfDir, item)).mtimeMs;
+        }
+      }
+    } catch {}
+  }
+  return mtimes;
+}
+
+function diffScanResults(oldInfo, newInfo) {
+  const diffs = [];
+  const oldStacks = new Set(oldInfo.stacks || []);
+  const newStacks = new Set(newInfo.stacks || []);
+  for (const s of newStacks) if (!oldStacks.has(s)) diffs.push(`Stack added: ${s}`);
+  for (const s of oldStacks) if (!newStacks.has(s)) diffs.push(`Stack removed: ${s}`);
+  const oldFws = new Set(oldInfo.frameworks || []);
+  const newFws = new Set(newInfo.frameworks || []);
+  for (const f of newFws) if (!oldFws.has(f)) diffs.push(`Framework added: ${f}`);
+  for (const f of oldFws) if (!newFws.has(f)) diffs.push(`Framework removed: ${f}`);
+  const oldSubs = new Set(oldInfo.sub_projects || []);
+  const newSubs = new Set(newInfo.sub_projects || []);
+  for (const s of newSubs) if (!oldSubs.has(s)) diffs.push(`Sub-project added: ${s}`);
+  if (Math.abs((newInfo.file_count || 0) - (oldInfo.file_count || 0)) > 5)
+    diffs.push(`File count: ${oldInfo.file_count || 0} -> ${newInfo.file_count || 0}`);
+  return diffs;
+}
+
+async function runWatch(target, interval = 5, auto = false, runKwargs = {}) {
+  target = path.resolve(target);
+  console.log(`\n  Watching ${target} (interval: ${interval}s, auto-update: ${auto})`);
+  console.log(`  Press Ctrl+C to stop.\n`);
+
+  let mtimes = getWatchTargets(target);
+  let lastScan = scanDirectory(target);
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  process.on("SIGINT", () => { console.log("\n  Watch stopped."); process.exit(0); });
+
+  while (true) {
+    await sleep(interval * 1000);
+    const newMtimes = getWatchTargets(target);
+    const changed = Object.keys(newMtimes).filter(k => newMtimes[k] !== mtimes[k]);
+    const newFiles = Object.keys(newMtimes).filter(k => !(k in mtimes));
+    const removedFiles = Object.keys(mtimes).filter(k => !(k in newMtimes));
+
+    if (changed.length || newFiles.length || removedFiles.length) {
+      const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
+      console.log(`  [${ts}] Changes detected:`);
+      for (const f of changed.sort()) console.log(`    Modified: ${f}`);
+      for (const f of newFiles.sort()) console.log(`    Added: ${f}`);
+      for (const f of removedFiles.sort()) console.log(`    Removed: ${f}`);
+
+      const newScan = scanDirectory(target);
+      const diffs = diffScanResults(lastScan, newScan);
+      if (diffs.length) {
+        console.log("  Impact:");
+        for (const d of diffs) console.log(`    ${d}`);
+      }
+
+      if (auto) {
+        console.log("  Auto-regenerating...");
+        await run(target, runKwargs);
+      } else {
+        console.log("  Run 'claude-primer --force' to regenerate.\n");
+      }
+
+      mtimes = newMtimes;
+      lastScan = newScan;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
 // plan-json
 // ─────────────────────────────────────────────
 
@@ -2815,6 +3244,7 @@ function planJson(target, withReadme = false) {
     sub_project_details: info.sub_project_details || [],
     extracted_from: sources,
     write_plan: writePlan,
+    confidence_scores: info.confidence_scores || {},
     git: {
       is_git: gitInfo.is_git || false,
       dirty: gitInfo.dirty || false,
@@ -2843,6 +3273,12 @@ function parseArgs(argv) {
     cleanRoot: false,
     fromDoc: null,
     gitMode: "ask",
+    templateDir: null,
+    watch: false,
+    watchInterval: 5,
+    watchAuto: false,
+    agent: null,
+    format: "markdown",
   };
 
   const positional = [];
@@ -2870,6 +3306,26 @@ function parseArgs(argv) {
           args.gitMode = argv[i];
         }
         break;
+      case "--template-dir":
+        i++;
+        args.templateDir = argv[i] || null;
+        break;
+      case "--watch": args.watch = true; break;
+      case "--watch-interval":
+        i++;
+        args.watchInterval = parseInt(argv[i], 10) || 5;
+        break;
+      case "--watch-auto": args.watchAuto = true; break;
+      case "--agent":
+        i++;
+        args.agent = argv[i] || null;
+        break;
+      case "--format":
+        i++;
+        if (argv[i] && ["markdown", "yaml", "json"].includes(argv[i])) {
+          args.format = argv[i];
+        }
+        break;
       case "--help": case "-h":
         console.log(`claude-primer — Claude Code Knowledge Architecture Bootstrap
 
@@ -2887,7 +3343,13 @@ Usage:
   claude-primer --reconfigure              # re-run wizard (ignores saved .claude-setup.rc)
   claude-primer --clean-root               # move aux docs to .claude/docs/
   claude-primer --from-doc <file>          # bootstrap from an existing document
-  claude-primer --git-mode ask|stash|skip  # git safety mode`);
+  claude-primer --git-mode ask|stash|skip  # git safety mode
+  claude-primer --template-dir <dir>       # template overrides directory
+  claude-primer --watch                    # watch for changes (poll-based)
+  claude-primer --watch-interval <secs>    # polling interval (default: 5)
+  claude-primer --watch-auto               # auto-regenerate on change
+  claude-primer --agent <agents>           # target: claude,cursor,copilot,windsurf,aider,codex,all
+  claude-primer --format markdown|yaml|json # output format for agent files`);
         process.exit(0);
         break;
       default:
@@ -2914,6 +3376,39 @@ async function main() {
     return;
   }
 
+  // Parse agent list
+  let agents = null;
+  if (args.agent) {
+    if (args.agent === "all") {
+      agents = Object.keys(AGENT_CONVENTIONS);
+    } else {
+      agents = args.agent.split(",").map(a => a.trim());
+      for (const a of agents) {
+        if (!(a in AGENT_CONVENTIONS)) {
+          console.error(`Unknown agent: ${a}. Valid: ${Object.keys(AGENT_CONVENTIONS).join(", ")}, all`);
+          process.exit(2);
+        }
+      }
+    }
+  }
+
+  // Watch mode
+  if (args.watch) {
+    await runWatch(args.target, args.watchInterval, args.watchAuto, {
+      dryRun: args.dryRun,
+      force: true,
+      noGitCheck: true,
+      withReadme: args.withReadme,
+      withRalph: args.withRalph,
+      gitMode: "skip",
+      interactive: false,
+      forceAll: args.forceAll,
+      cleanRoot: args.cleanRoot,
+      templateDir: args.templateDir,
+    });
+    return;
+  }
+
   const interactive = !args.yes;
   let gitMode = args.gitMode;
   if (args.noGitCheck) {
@@ -2936,6 +3431,9 @@ async function main() {
     forceAll: args.forceAll,
     fromDoc: args.fromDoc,
     cleanRoot: args.cleanRoot,
+    templateDir: args.templateDir,
+    agents,
+    outputFormat: args.format,
   });
 }
 
