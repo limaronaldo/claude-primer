@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Watch Mode — Claude Primer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid; }
+    nav a { text-decoration: none; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/claude-primer/"><strong>Claude Primer</strong></a>
+    <a href="/claude-primer/guides/getting-started.html">Getting Started</a>
+    <a href="/claude-primer/guides/templates.html">Templates</a>
+    <a href="/claude-primer/guides/watch-mode.html">Watch Mode</a>
+    <a href="/claude-primer/guides/multi-agent.html">Multi-Agent</a>
+    <a href="/claude-primer/guides/plugins.html">Plugins</a>
+    <a href="/claude-primer/guides/cli-reference.html">CLI Reference</a>
+  </nav>
+
+  <h1>Watch Mode</h1>
+  <p>Monitor your project for changes and regenerate documentation automatically.</p>
+
+  <h2>Basic Usage</h2>
+  <pre><code># Watch with manual confirmation on each change
+claude-primer --watch
+
+# Auto-regenerate without prompts
+claude-primer --watch --watch-auto
+
+# Custom polling interval (default: 5 seconds)
+claude-primer --watch --watch-interval 10</code></pre>
+
+  <h2>How It Works</h2>
+  <ol>
+    <li>Performs an initial scan and generation</li>
+    <li>Monitors key project files (package.json, requirements.txt, etc.) for modifications</li>
+    <li>When changes are detected, reports what changed</li>
+    <li>Regenerates documentation (with confirmation unless <code>--watch-auto</code> is set)</li>
+  </ol>
+
+  <h2>Watched Files</h2>
+  <p>Watch mode monitors files that affect project detection:</p>
+  <ul>
+    <li>Package manifests: <code>package.json</code>, <code>requirements.txt</code>, <code>pyproject.toml</code>, <code>Cargo.toml</code>, <code>go.mod</code></li>
+    <li>Config files: <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>Makefile</code></li>
+    <li>CI configs: <code>.github/workflows/*.yml</code></li>
+  </ul>
+
+  <h2>Combining with Other Flags</h2>
+  <pre><code># Watch with template overrides
+claude-primer --watch --watch-auto --template-dir ./my-templates
+
+# Watch and also generate agent context
+claude-primer --watch --watch-auto --agent all</code></pre>
+
+  <p>Watch mode always runs with <code>--force</code> and <code>--git-mode skip</code> to avoid interactive prompts during regeneration.</p>
+
+  <footer>
+    <p>Claude Primer &mdash; <a href="https://github.com/limaronaldo/claude-primer">GitHub</a> &mdash; MIT License</p>
+  </footer>
+</body>
+</html>

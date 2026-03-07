@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Primer — Prime your repo for Claude Code</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid; }
+    nav a { text-decoration: none; }
+    .hero { text-align: center; padding: 2rem 0; }
+    pre code { font-size: 0.9em; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid; font-size: 0.85em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+    .card { padding: 1.5rem; border: 1px solid; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/claude-primer/"><strong>Claude Primer</strong></a>
+    <a href="/claude-primer/guides/getting-started.html">Getting Started</a>
+    <a href="/claude-primer/guides/templates.html">Templates</a>
+    <a href="/claude-primer/guides/watch-mode.html">Watch Mode</a>
+    <a href="/claude-primer/guides/multi-agent.html">Multi-Agent</a>
+    <a href="/claude-primer/guides/plugins.html">Plugins</a>
+    <a href="/claude-primer/guides/cli-reference.html">CLI Reference</a>
+  </nav>
+
+  <div class="hero">
+    <h1>Claude Primer</h1>
+    <p>Prime your repo for Claude Code.</p>
+    <p>Scans your project's DNA and generates the knowledge architecture Claude Code needs to work effectively.</p>
+  </div>
+
+  <h2>Install</h2>
+  <pre><code># One command (no dependencies)
+curl -fsSL https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.sh | bash
+
+# Python
+pipx run claude-primer
+
+# Node.js
+npx claude-primer
+
+# macOS
+brew install limaronaldo/tap/claude-primer
+
+# Windows
+scoop bucket add limaronaldo https://github.com/limaronaldo/scoop-bucket
+scoop install claude-primer</code></pre>
+
+  <h2>What It Generates</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>CLAUDE.md</h3>
+      <p>Primary context file with project overview, routing rules, environment setup, common commands, and architecture notes.</p>
+    </div>
+    <div class="card">
+      <h3>STANDARDS.md</h3>
+      <p>Iron Laws, Decision Heuristics, Stuck Protocol, iteration limits, and legitimate exception criteria.</p>
+    </div>
+    <div class="card">
+      <h3>QUICKSTART.md</h3>
+      <p>Complete workflow examples, pre-task checklists, and auto-maintained quick reference.</p>
+    </div>
+    <div class="card">
+      <h3>ERRORS_AND_LESSONS.md</h3>
+      <p>Rationalization Table, Red Flags, Defense-in-Depth debugging, and common pitfall tracking.</p>
+    </div>
+  </div>
+
+  <h2>Key Features</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Confidence Scoring</h3>
+      <p>Every extracted field carries a confidence level (HIGH/MEDIUM/LOW) based on detection source.</p>
+    </div>
+    <div class="card">
+      <h3>Template System</h3>
+      <p>Override any section with custom templates that survive regeneration.</p>
+    </div>
+    <div class="card">
+      <h3>Watch Mode</h3>
+      <p>Monitor source files and regenerate docs automatically when changes are detected.</p>
+    </div>
+    <div class="card">
+      <h3>Multi-Agent Output</h3>
+      <p>Generate context files for Cursor, Copilot, Windsurf, Aider, and Codex.</p>
+    </div>
+    <div class="card">
+      <h3>Plugin System</h3>
+      <p>Register custom generators to produce additional files alongside built-in output.</p>
+    </div>
+    <div class="card">
+      <h3>Monorepo Support</h3>
+      <p>Detects workspace roots, groups sub-projects, and scopes docs appropriately.</p>
+    </div>
+  </div>
+
+  <footer>
+    <p>Claude Primer &mdash; <a href="https://github.com/limaronaldo/claude-primer">GitHub</a> &mdash; MIT License</p>
+  </footer>
+</body>
+</html>

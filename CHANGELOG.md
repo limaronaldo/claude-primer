@@ -2,6 +2,15 @@
 
 All notable changes to claude-primer are documented here.
 
+## [1.5.0] — 2026-03-07
+
+### Added
+- **Plugin system** — `.claude-primer/plugins/` directory for custom generators; plugins receive full scan info and return `{filename, content}`; supports multi-file output; `--plugin-dir` flag for custom locations
+- **Opt-in telemetry** — anonymous usage stats when `CLAUDE_PRIMER_TELEMETRY=1`; collects flags, stacks, timing only (no PII); `--telemetry-off` override; best-effort non-blocking POST
+- **End-to-end integration tests** — CI job downloads built binaries and runs 6 scenarios: basic generation, --force idempotency, --plan-json shape, --agent codex, --dry-run, plugin system
+- **Documentation site** — GitHub Pages at limaronaldo.github.io/claude-primer with guides for getting started, templates, watch mode, multi-agent, plugins, and CLI reference
+- Full feature parity between Python and npm CLIs for plugins and telemetry
+
 ## [1.4.0] — 2026-03-07
 
 ### Added

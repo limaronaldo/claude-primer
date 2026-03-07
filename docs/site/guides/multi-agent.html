@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-Agent Output — Claude Primer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  <style>
+    nav { display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid; }
+    nav a { text-decoration: none; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/claude-primer/"><strong>Claude Primer</strong></a>
+    <a href="/claude-primer/guides/getting-started.html">Getting Started</a>
+    <a href="/claude-primer/guides/templates.html">Templates</a>
+    <a href="/claude-primer/guides/watch-mode.html">Watch Mode</a>
+    <a href="/claude-primer/guides/multi-agent.html">Multi-Agent</a>
+    <a href="/claude-primer/guides/plugins.html">Plugins</a>
+    <a href="/claude-primer/guides/cli-reference.html">CLI Reference</a>
+  </nav>
+
+  <h1>Multi-Agent Context Output</h1>
+  <p>Generate context files for AI coding tools beyond Claude Code.</p>
+
+  <h2>Supported Agents</h2>
+  <table>
+    <thead><tr><th>Agent</th><th>Output File</th></tr></thead>
+    <tbody>
+      <tr><td><code>claude</code></td><td><code>CLAUDE.md</code> (default)</td></tr>
+      <tr><td><code>cursor</code></td><td><code>.cursor/rules/project.mdc</code></td></tr>
+      <tr><td><code>copilot</code></td><td><code>.github/copilot-instructions.md</code></td></tr>
+      <tr><td><code>windsurf</code></td><td><code>.windsurfrules</code></td></tr>
+      <tr><td><code>aider</code></td><td><code>.aider/conventions.md</code></td></tr>
+      <tr><td><code>codex</code></td><td><code>AGENTS.md</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Usage</h2>
+  <pre><code># Generate for a single agent
+claude-primer --agent cursor --yes
+
+# Generate for multiple agents
+claude-primer --agent cursor,copilot,codex --yes
+
+# Generate for all supported agents
+claude-primer --agent all --yes</code></pre>
+
+  <h2>Output Formats</h2>
+  <p>Agent files default to markdown. You can also output structured data:</p>
+  <pre><code># JSON format
+claude-primer --agent copilot --format json --yes
+
+# YAML format
+claude-primer --agent copilot --format yaml --yes</code></pre>
+  <p>Structured formats create a <code>.claude-primer-context.{json,yaml}</code> file with the full project analysis.</p>
+
+  <h2>Agent File Content</h2>
+  <p>Each agent file contains the same core project context adapted to the tool's conventions:</p>
+  <ul>
+    <li>Project overview and tech stack</li>
+    <li>Directory structure</li>
+    <li>Common commands</li>
+    <li>Coding standards and conventions</li>
+    <li>Framework-specific patterns</li>
+  </ul>
+
+  <footer>
+    <p>Claude Primer &mdash; <a href="https://github.com/limaronaldo/claude-primer">GitHub</a> &mdash; MIT License</p>
+  </footer>
+</body>
+</html>
