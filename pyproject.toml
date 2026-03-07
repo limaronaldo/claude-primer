@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "super-claude"
+name = "superclaudeai"
 version = "1.0.0"
 description = "Bootstrap Claude Code knowledge architecture (CLAUDE.md, STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md)"
 readme = "README.md"

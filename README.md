@@ -8,13 +8,13 @@ Generates context-aware `CLAUDE.md`, `STANDARDS.md`, `QUICKSTART.md`, and `ERROR
 
 ```bash
 # No install needed — run directly:
-pipx run super-claude
+pipx run superclaudeai
 
 # Or with uv:
-uvx super-claude
+uvx superclaudeai
 
 # Or install globally:
-pip install super-claude
+pip install superclaudeai
 super-claude
 ```
 
