@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 !build/pyinstaller.spec
+!build/winget/
 .pytest_cache/
 .claude/
 

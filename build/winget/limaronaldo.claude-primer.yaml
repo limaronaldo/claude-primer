@@ -1,5 +1,5 @@
 PackageIdentifier: limaronaldo.claude-primer
-PackageVersion: 1.3.3
+PackageVersion: 1.3.4
 PackageName: Claude Primer
 Publisher: Ronaldo Lima
 License: MIT
@@ -16,8 +16,8 @@ PackageUrl: https://github.com/limaronaldo/claude-primer
 LicenseUrl: https://github.com/limaronaldo/claude-primer/blob/main/LICENSE
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/limaronaldo/claude-primer/releases/download/v1.3.3/claude-primer-windows-x86_64.exe
-    InstallerSha256: 2661687dff45874cf60fc1ead81c9c7249f3a7208d599fd0c4596202258e4e70
+    InstallerUrl: https://github.com/limaronaldo/claude-primer/releases/download/v1.3.4/claude-primer-windows-x86_64.exe
+    InstallerSha256: 3404b166b11c9dc29a03cc2f6faaa296765649de1d74678eeb48f1c60fbf57ae
     InstallerType: portable
     Commands:
       - claude-primer
