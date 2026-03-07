@@ -21,26 +21,27 @@ super-claude
 ## Usage
 
 ```bash
-# Interactive setup in current directory
-super-claude
+super-claude                        # interactive setup in current directory
+super-claude /path/to/project       # specific directory
+super-claude --dry-run              # preview without writing
+super-claude --force                # overwrite changed files (skip unchanged)
+super-claude --force-all            # overwrite all files unconditionally
+super-claude --yes                  # non-interactive (accept defaults)
+super-claude --plan-json            # output project analysis as JSON
+super-claude --with-readme          # also generate README.md
+super-claude --with-ralph           # generate Ralph integration files
+super-claude --reconfigure          # re-run wizard (ignore saved config)
+super-claude --no-git-check         # skip git safety entirely
+super-claude --git-mode stash       # auto-stash dirty changes
+super-claude --git-mode skip        # skip git safety
+```
 
-# Specific directory
-super-claude /path/to/project
+Flags can be combined for full automation:
 
-# Preview without writing
-super-claude --dry-run
-
-# Overwrite existing files
-super-claude --force
-
-# Non-interactive (accept defaults)
-super-claude --yes
-
-# Output project analysis as JSON
-super-claude --plan-json
-
-# Also generate README.md
-super-claude --with-readme
+```bash
+super-claude --force --yes          # overwrite changed files, no prompts
+super-claude --force-all --yes      # overwrite ALL files, no prompts
+super-claude --git-mode skip --yes  # full automation, no git checks
 ```
 
 ## What It Does
@@ -53,6 +54,20 @@ super-claude --with-readme
    - `STANDARDS.md` — governance rules, code quality gates, naming conventions
    - `QUICKSTART.md` — essential commands and quick fixes
    - `ERRORS_AND_LESSONS.md` — mistake catalog with rationalization table
+5. **Verifies** generated files have correct structure
+6. **Saves** wizard answers to `.claude-setup.rc` for future runs
+
+## Ralph Integration
+
+The `--with-ralph` flag creates an integration layer that eliminates duplication between Ralph (an autonomous coding agent) and the Super-Claude knowledge architecture. Instead of maintaining separate context files, Ralph reads directly from the same generated documents, with a thin prompt wrapper and symlinks to keep everything in sync.
+
+Files created by `--with-ralph`:
+
+- `.ralph/PROMPT.md` — Ralph-specific development instructions referencing the knowledge architecture
+- `.ralph/AGENT.md` — symlink to `QUICKSTART.md` (single source of truth)
+- `.ralph/fix_plan.md` — prioritized task list (Ralph-owned, never overwritten without `--force`)
+- `.ralph/hooks/post-loop.sh` — post-loop hook that detects changes to knowledge files
+- `.ralphrc` — stack-aware Ralph project configuration at the project root
 
 ## Generated Content Highlights
 
@@ -60,11 +75,13 @@ super-claude --with-readme
 - **Decision Heuristics** — 6 concrete rules for autonomous decision-making
 - **Stuck Protocol** — explicit steps when 3+ approaches fail
 - **Red Flags** — self-monitoring triggers to prevent common mistakes
-- **Rationalization Table** — excuse→reality mapping to catch bad reasoning
+- **Rationalization Table** — excuse-to-reality mapping to catch bad reasoning
 - **HARD-GATE tags** — absolute non-negotiable rules
 - **Tier-based governance** — process weight proportional to blast radius
 - **Defense-in-Depth debugging** — 4-layer validation after bug fixes
 - **Git worktree guidance** — parallel development patterns (for git repos)
+- **AUTO-MAINTAINED marker** — QUICKSTART.md flagged for automatic upkeep
+- **Idempotent regeneration** — `--force` skips unchanged files
 
 ## Supported Stacks
 
