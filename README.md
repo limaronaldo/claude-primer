@@ -27,7 +27,17 @@ Like a real primer, it prepares the surface so everything after it adheres bette
 
 ## Install
 
-Choose your preferred method — all run the same tool:
+### One command (no dependencies)
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.ps1 | iex
+```
+
+### Package managers
 
 ```bash
 # Python (recommended)
@@ -41,8 +51,25 @@ npx claude-primer                   # zero install via npm
 # macOS
 brew install limaronaldo/tap/claude-primer
 
-# GitHub Actions
-# - uses: limaronaldo/claude-primer-action@v1
+# Windows
+scoop bucket add limaronaldo https://github.com/limaronaldo/scoop-bucket
+scoop install claude-primer
+```
+
+### Containers and binaries
+
+```bash
+# Docker
+docker run --rm -v "$(pwd):/project" ghcr.io/limaronaldo/claude-primer
+
+# Direct download (no runtime needed)
+# https://github.com/limaronaldo/claude-primer/releases
+```
+
+### CI/CD
+
+```yaml
+- uses: limaronaldo/claude-primer-action@v1
 ```
 
 ## Usage
@@ -133,6 +160,10 @@ Django, Flask, FastAPI, Next.js, React, Vue, Svelte, SvelteKit, Remix, Astro, Ex
 claude-primer/
 ├── README.md          # this file
 ├── LICENSE
+├── Dockerfile         # multi-stage Docker build
+├── install.sh         # curl|bash installer (Linux/macOS)
+├── install.ps1        # PowerShell installer (Windows)
+├── build/             # PyInstaller spec for standalone binaries
 ├── docs/              # project documentation
 ├── python/            # PyPI package (claude-primer)
 │   ├── claude_primer.py
