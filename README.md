@@ -1,39 +1,49 @@
 # Claude Primer
 
+[![PyPI](https://img.shields.io/pypi/v/claude-primer)](https://pypi.org/project/claude-primer/)
+[![npm](https://img.shields.io/npm/v/claude-primer)](https://www.npmjs.com/package/claude-primer)
+[![CI](https://github.com/limaronaldo/claude-primer/actions/workflows/ci.yml/badge.svg)](https://github.com/limaronaldo/claude-primer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Prime your repo for Claude Code.
 
 Scans your project's DNA and generates the knowledge architecture Claude Code needs to work effectively.
 
 Like a real primer, it prepares the surface so everything after it adheres better: `claude-primer` grounds Claude Code sessions in real project context from the first command.
 
-## Install & Run
+## Generated Content Highlights
 
-### Python (PyPI)
+- **Iron Laws** — bright-line rules that are never violated
+- **Decision Heuristics** — 6 concrete rules for autonomous decision-making
+- **Stuck Protocol** — explicit steps when 3+ approaches fail
+- **Red Flags** — self-monitoring triggers to prevent common mistakes
+- **Rationalization Table** — excuse-to-reality mapping to catch bad reasoning
+- **HARD-GATE tags** — absolute non-negotiable rules
+- **Tier-based governance** — process weight proportional to blast radius
+- **Defense-in-Depth debugging** — 4-layer validation after bug fixes
+- **Git worktree guidance** — parallel development patterns (for git repos)
+- **AUTO-MAINTAINED marker** — QUICKSTART.md flagged for automatic upkeep
+- **Idempotent regeneration** — `--force` skips unchanged files
+
+## Install
+
+Choose your preferred method — all run the same tool:
 
 ```bash
-# No install needed — run directly:
-pipx run claude-primer
+# Python (recommended)
+pipx run claude-primer              # zero install, runs directly
+uvx claude-primer                   # alternative zero install
+pip install claude-primer           # global install
 
-# Or with uv:
-uvx claude-primer
+# Node.js
+npx claude-primer                   # zero install via npm
 
-# Or install globally:
-pip install claude-primer
-claude-primer
+# macOS
+brew install limaronaldo/tap/claude-primer
+
+# GitHub Actions
+# - uses: limaronaldo/claude-primer-action@v1
 ```
-
-### Node.js (npm)
-
-```bash
-# No install needed — run directly:
-npx claude-primer
-
-# Or install globally:
-npm install -g claude-primer
-claude-primer
-```
-
-Both packages produce identical output. Use whichever runtime you already have.
 
 ## Usage
 
@@ -76,6 +86,27 @@ claude-primer --git-mode skip --yes # full automation, no git checks
 5. **Verifies** generated files have correct structure
 6. **Saves** wizard answers to `.claude-setup.rc` for future runs
 
+## GitHub Action
+
+```yaml
+name: Prime for Claude Code
+on:
+  push:
+    branches: [main]
+
+jobs:
+  primer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: limaronaldo/claude-primer-action@v1
+        with:
+          force: true
+          commit: true
+```
+
+See [claude-primer-action](https://github.com/limaronaldo/claude-primer-action) for full documentation.
+
 ## Ralph Integration
 
 The `--with-ralph` flag creates an integration layer that eliminates duplication between Ralph (an autonomous coding agent) and the Claude Primer knowledge architecture. Instead of maintaining separate context files, Ralph reads directly from the same generated documents, with a thin prompt wrapper and symlinks to keep everything in sync.
@@ -87,20 +118,6 @@ Files created by `--with-ralph`:
 - `.ralph/fix_plan.md` — prioritized task list (Ralph-owned, never overwritten without `--force`)
 - `.ralph/hooks/post-loop.sh` — post-loop hook that detects changes to knowledge files
 - `.ralphrc` — stack-aware Ralph project configuration at the project root
-
-## Generated Content Highlights
-
-- **Iron Laws** — bright-line rules that are never violated
-- **Decision Heuristics** — 6 concrete rules for autonomous decision-making
-- **Stuck Protocol** — explicit steps when 3+ approaches fail
-- **Red Flags** — self-monitoring triggers to prevent common mistakes
-- **Rationalization Table** — excuse-to-reality mapping to catch bad reasoning
-- **HARD-GATE tags** — absolute non-negotiable rules
-- **Tier-based governance** — process weight proportional to blast radius
-- **Defense-in-Depth debugging** — 4-layer validation after bug fixes
-- **Git worktree guidance** — parallel development patterns (for git repos)
-- **AUTO-MAINTAINED marker** — QUICKSTART.md flagged for automatic upkeep
-- **Idempotent regeneration** — `--force` skips unchanged files
 
 ## Supported Stacks
 
