@@ -1,47 +1,66 @@
-# Super-Claude
+# Claude Primer
 
-Bootstrap Claude Code knowledge architecture in any project directory.
+Prime your repo for Claude Code.
 
-Generates context-aware `CLAUDE.md`, `STANDARDS.md`, `QUICKSTART.md`, and `ERRORS_AND_LESSONS.md` files that help Claude Code understand your codebase.
+Scans your project's DNA and generates the knowledge architecture Claude Code needs to work effectively.
+
+Like a real primer, it prepares the surface so everything after it adheres better: `claude-primer` grounds Claude Code sessions in real project context from the first command.
 
 ## Install & Run
 
+### Python (PyPI)
+
 ```bash
 # No install needed — run directly:
-pipx run superclaudeai
+pipx run claude-primer
 
 # Or with uv:
-uvx superclaudeai
+uvx claude-primer
 
 # Or install globally:
-pip install superclaudeai
-super-claude
+pip install claude-primer
+claude-primer
 ```
+
+### Node.js (npm)
+
+```bash
+# No install needed — run directly:
+npx claude-primer
+
+# Or install globally:
+npm install -g claude-primer
+claude-primer
+```
+
+Both packages produce identical output. Use whichever runtime you already have.
 
 ## Usage
 
 ```bash
-super-claude                        # interactive setup in current directory
-super-claude /path/to/project       # specific directory
-super-claude --dry-run              # preview without writing
-super-claude --force                # overwrite changed files (skip unchanged)
-super-claude --force-all            # overwrite all files unconditionally
-super-claude --yes                  # non-interactive (accept defaults)
-super-claude --plan-json            # output project analysis as JSON
-super-claude --with-readme          # also generate README.md
-super-claude --with-ralph           # generate Ralph integration files
-super-claude --reconfigure          # re-run wizard (ignore saved config)
-super-claude --no-git-check         # skip git safety entirely
-super-claude --git-mode stash       # auto-stash dirty changes
-super-claude --git-mode skip        # skip git safety
+claude-primer                       # interactive setup in current directory
+claude-primer /path/to/project      # specific directory
+claude-primer --dry-run             # preview without writing
+claude-primer --force               # overwrite changed files (skip unchanged)
+claude-primer --force-all           # overwrite all files unconditionally
+claude-primer --yes                 # non-interactive (accept defaults)
+claude-primer --plan-json           # output project analysis as JSON
+claude-primer --with-readme         # also generate README.md
+claude-primer --with-ralph          # generate Ralph integration files
+claude-primer --reconfigure         # re-run wizard (ignore saved config)
+claude-primer --no-git-check        # skip git safety entirely
+claude-primer --from-doc FILE       # bootstrap from PRD/spec document
+claude-primer --clean-root          # move aux docs to .claude/docs/
+claude-primer --git-mode stash      # auto-stash dirty changes
+claude-primer --git-mode skip       # skip git safety
 ```
 
 Flags can be combined for full automation:
 
 ```bash
-super-claude --force --yes          # overwrite changed files, no prompts
-super-claude --force-all --yes      # overwrite ALL files, no prompts
-super-claude --git-mode skip --yes  # full automation, no git checks
+claude-primer --force --yes         # overwrite changed files, no prompts
+claude-primer --force-all --yes     # overwrite ALL files, no prompts
+claude-primer --git-mode skip --yes # full automation, no git checks
 ```
 
 ## What It Does
@@ -59,7 +78,7 @@ super-claude --git-mode skip --yes  # full automation, no git checks
 
 ## Ralph Integration
 
-The `--with-ralph` flag creates an integration layer that eliminates duplication between Ralph (an autonomous coding agent) and the Super-Claude knowledge architecture. Instead of maintaining separate context files, Ralph reads directly from the same generated documents, with a thin prompt wrapper and symlinks to keep everything in sync.
+The `--with-ralph` flag creates an integration layer that eliminates duplication between Ralph (an autonomous coding agent) and the Claude Primer knowledge architecture. Instead of maintaining separate context files, Ralph reads directly from the same generated documents, with a thin prompt wrapper and symlinks to keep everything in sync.
 
 Files created by `--with-ralph`:
 
@@ -90,6 +109,23 @@ Python, Node.js/TypeScript, Rust, Go, Ruby, Java/Kotlin, PHP, .NET, Elixir, Swif
 ## Supported Frameworks
 
 Django, Flask, FastAPI, Next.js, React, Vue, Svelte, SvelteKit, Remix, Astro, Express, NestJS, Hono, Axum, Actix, Rocket, Gin, Fiber, Echo, Phoenix, Spring, Laravel, Flutter, and more.
+
+## Repository Structure
+
+```
+claude-primer/
+├── README.md          # this file
+├── LICENSE
+├── docs/              # project documentation
+├── python/            # PyPI package (claude-primer)
+│   ├── claude_primer.py
+│   ├── pyproject.toml
+│   └── tests/
+└── npm/               # npm package (claude-primer)
+    ├── index.mjs
+    ├── package.json
+    └── tests/
+```
 
 ## Authors
 
