@@ -795,5 +795,272 @@ class TestRalphIntegration:
         assert "Bash(git *)" in content
 
 
+# ─────────────────────────────────────────────
+# --from-doc flag
+# ─────────────────────────────────────────────
+
+class TestFromDoc:
+    """Test --from-doc flag for bootstrapping from existing documents."""
+
+    def test_from_doc_extracts_description(self, empty_dir):
+        """Create a temp .md file with a description, run with --from-doc, check CLAUDE.md has the description."""
+        doc = empty_dir / "spec.md"
+        doc.write_text(
+            "# My Project Spec\n\n"
+            "This is a fantastic project that does amazing things.\n\n"
+            "## Details\n\nMore info here.\n"
+        )
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--from-doc", str(doc))
+        assert r.returncode == 0
+        content = (empty_dir / "CLAUDE.md").read_text()
+        assert "fantastic project" in content
+
+    def test_from_doc_extracts_commands(self, empty_dir):
+        """Temp .md with bash blocks, check QUICKSTART.md has them."""
+        doc = empty_dir / "prd.md"
+        doc.write_text(
+            "# PRD\n\n"
+            "Some intro text for the project.\n\n"
+            "## Setup\n\n"
+            "```bash\npip install -r requirements.txt\npython main.py\n```\n\n"
+            "## Testing\n\n"
+            "```sh\npytest -v\n```\n"
+        )
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--from-doc", str(doc))
+        assert r.returncode == 0
+        content = (empty_dir / "QUICKSTART.md").read_text()
+        assert "pip install" in content or "pytest" in content
+
+    def test_from_doc_missing_file(self, empty_dir):
+        """Graceful handling when file doesn't exist (should still generate docs)."""
+        missing = str(empty_dir / "nonexistent.md")
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--from-doc", missing)
+        assert r.returncode == 0
+        # Should still generate docs, just without doc content
+        assert (empty_dir / "CLAUDE.md").exists()
+        assert (empty_dir / "QUICKSTART.md").exists()
+
+    def test_from_doc_with_existing_project(self, python_project):
+        """from-doc on a python project merges both sources."""
+        doc = python_project / "design.md"
+        doc.write_text(
+            "# Design Doc\n\n"
+            "A Python web service for data processing.\n\n"
+            "## System Architecture\n\n"
+            "The system uses a modular pipeline architecture with plugins.\n\n"
+            "```bash\npytest --cov\n```\n"
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check", "--from-doc", str(doc))
+        assert r.returncode == 0
+        content = (empty_dir / "CLAUDE.md").read_text() if False else (python_project / "CLAUDE.md").read_text()
+        # Should have both python detection AND doc content
+        assert "python" in content.lower() or "Python" in content
+        # Architecture from the doc should appear
+        assert "pipeline" in content or "modular" in content
+
+
+# ─────────────────────────────────────────────
+# Command deduplication and ranking (Phase 7)
+# ─────────────────────────────────────────────
+
+class TestCommandDedup:
+    """Tests for dedup_and_rank_commands() pure function."""
+
+    def test_dedup_removes_duplicates(self):
+        from super_claude import dedup_and_rank_commands
+        result = dedup_and_rank_commands(["pip install x", "pip install x", "pytest"])
+        assert len(result) == 2
+        assert "pip install x" in result
+        assert "pytest" in result
+
+    def test_dedup_removes_path_specific(self):
+        from super_claude import dedup_and_rank_commands
+        commands = [
+            "pip install -r requirements.txt",
+            "cd /Users/john/projects/myapp && npm install",
+            "python /home/dev/scripts/run.py",
+            "pytest",
+        ]
+        result = dedup_and_rank_commands(commands)
+        assert "pip install -r requirements.txt" in result
+        assert "pytest" in result
+        # Path-specific commands should be removed
+        assert not any("/Users/" in cmd for cmd in result)
+        assert not any("/home/" in cmd for cmd in result)
+
+    def test_dedup_ranking_order(self):
+        from super_claude import dedup_and_rank_commands
+        commands = [
+            "npm run build",       # build (4)
+            "pytest",              # test (2)
+            "pip install flask",   # install (0)
+        ]
+        result = dedup_and_rank_commands(commands)
+        assert len(result) == 3
+        # install should come before test, test before build
+        install_idx = result.index("pip install flask")
+        test_idx = result.index("pytest")
+        build_idx = result.index("npm run build")
+        assert install_idx < test_idx < build_idx
+
+    def test_dedup_preserves_valid_commands(self):
+        from super_claude import dedup_and_rank_commands
+        commands = [
+            "pip install -r requirements.txt",
+            "npm run dev",
+            "pytest --cov",
+            "eslint .",
+            "docker compose up",
+        ]
+        result = dedup_and_rank_commands(commands)
+        assert len(result) == 5
+        for cmd in commands:
+            assert cmd in result
+
+    def test_dedup_empty_list(self):
+        from super_claude import dedup_and_rank_commands
+        result = dedup_and_rank_commands([])
+        assert result == []
+
+
+
+
+# ─────────────────────────────────────────────
+# Enhanced monorepo intelligence (Phase 9)
+# ─────────────────────────────────────────────
+
+class TestMonorepoIntelligence:
+    """Enhanced monorepo sub-project detail detection."""
+
+    def test_monorepo_sub_project_details(self, tmp_path):
+        """Verify sub_project_details has correct stacks and frameworks."""
+        # Create a fake monorepo
+        (tmp_path / "turbo.json").write_text('{"pipeline": {}}\n')
+        pkg = {"name": "root", "private": True, "workspaces": ["apps/*"]}
+        (tmp_path / "package.json").write_text(json.dumps(pkg, indent=2))
+
+        # apps/web — node project with next
+        web = tmp_path / "apps" / "web"
+        web.mkdir(parents=True)
+        web_pkg = {"name": "web", "dependencies": {"next": "^14.0.0"}}
+        (web / "package.json").write_text(json.dumps(web_pkg, indent=2))
+
+        # apps/api — python project with fastapi
+        api = tmp_path / "apps" / "api"
+        api.mkdir(parents=True)
+        (api / "requirements.txt").write_text("fastapi==0.100.0\nuvicorn\n")
+
+        r = run_setup(str(tmp_path), "--plan-json")
+        data = json.loads(r.stdout)
+
+        assert data["is_monorepo"] is True
+        assert "sub_project_details" in data
+        details = data["sub_project_details"]
+        assert len(details) >= 2
+
+        # Find web and api details
+        web_detail = next((d for d in details if "web" in d["path"]), None)
+        api_detail = next((d for d in details if "api" in d["path"]), None)
+
+        assert web_detail is not None, f"No web detail found in {details}"
+        assert "node" in web_detail["stacks"]
+
+        assert api_detail is not None, f"No api detail found in {details}"
+        assert "python" in api_detail["stacks"]
+
+    def test_monorepo_claude_md_has_enhanced_table(self, tmp_path):
+        """CLAUDE.md should have the enhanced table with Stack/Framework columns."""
+        (tmp_path / "turbo.json").write_text('{"pipeline": {}}\n')
+        pkg = {"name": "root", "private": True, "workspaces": ["apps/*"]}
+        (tmp_path / "package.json").write_text(json.dumps(pkg, indent=2))
+
+        web = tmp_path / "apps" / "web"
+        web.mkdir(parents=True)
+        web_pkg = {"name": "web", "dependencies": {"next": "^14.0.0"}}
+        (web / "package.json").write_text(json.dumps(web_pkg, indent=2))
+
+        api = tmp_path / "apps" / "api"
+        api.mkdir(parents=True)
+        (api / "requirements.txt").write_text("fastapi==0.100.0\n")
+
+        run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "CLAUDE.md").read_text()
+
+        assert "| Directory | Stack | Framework | Local CLAUDE.md |" in content
+        assert "|-----------|-------|-----------|" in content
+
+    def test_monorepo_root_note(self, tmp_path):
+        """CLAUDE.md should have the 'This is a monorepo root' note."""
+        (tmp_path / "turbo.json").write_text('{"pipeline": {}}\n')
+        pkg = {"name": "root", "private": True, "workspaces": ["apps/*"]}
+        (tmp_path / "package.json").write_text(json.dumps(pkg, indent=2))
+
+        web = tmp_path / "apps" / "web"
+        web.mkdir(parents=True)
+        (web / "package.json").write_text('{"name": "web"}\n')
+
+        run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "CLAUDE.md").read_text()
+
+        assert "This is a monorepo root" in content
+
+    def test_non_monorepo_no_enhanced_table(self, tmp_path):
+        """Regular (non-monorepo) project should not have the monorepo table."""
+        (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+        (tmp_path / "main.py").write_text("print('hello')\n")
+
+        run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "CLAUDE.md").read_text()
+
+        assert "This is a monorepo root" not in content
+        assert "| Directory | Stack | Framework | Local CLAUDE.md |" not in content
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ─────────────────────────────────────────────
+# Clean root (--clean-root)
+# ─────────────────────────────────────────────
+
+class TestCleanRoot:
+    """Test --clean-root moves auxiliary docs to .claude/docs/."""
+
+    def test_clean_root_claude_md_at_root(self, empty_dir):
+        """CLAUDE.md should remain in the project root when --clean-root is used."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root")
+        assert r.returncode == 0
+        assert (empty_dir / "CLAUDE.md").exists()
+
+    def test_clean_root_others_in_docs_dir(self, empty_dir):
+        """STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md should be in .claude/docs/."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root")
+        assert r.returncode == 0
+        docs = empty_dir / ".claude" / "docs"
+        for f in ["STANDARDS.md", "QUICKSTART.md", "ERRORS_AND_LESSONS.md"]:
+            assert (docs / f).exists(), f"{f} not found in .claude/docs/"
+            assert not (empty_dir / f).exists(), f"{f} should NOT be at root with --clean-root"
+
+    def test_clean_root_references_updated(self, empty_dir):
+        """CLAUDE.md references should point to .claude/docs/ paths."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root")
+        assert r.returncode == 0
+        content = (empty_dir / "CLAUDE.md").read_text()
+        assert ".claude/docs/QUICKSTART.md" in content
+        assert ".claude/docs/STANDARDS.md" in content
+        assert ".claude/docs/ERRORS_AND_LESSONS.md" in content
+
+    def test_no_clean_root_default(self, empty_dir):
+        """Without --clean-root, all files should be at root (default behavior)."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        for f in ["CLAUDE.md", "QUICKSTART.md", "STANDARDS.md", "ERRORS_AND_LESSONS.md"]:
+            assert (empty_dir / f).exists(), f"{f} not at root"
+        assert not (empty_dir / ".claude" / "docs").exists()
+
+    def test_clean_root_creates_docs_dir(self, empty_dir):
+        """.claude/docs/ directory should be created when --clean-root is used."""
+        r = run_setup(str(empty_dir), "--yes", "--no-git-check", "--clean-root")
+        assert r.returncode == 0
+        assert (empty_dir / ".claude" / "docs").is_dir()

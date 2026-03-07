@@ -14,6 +14,7 @@ Usage:
     super-claude --no-git-check              # skip git safety entirely
     super-claude --plan-json                 # output project analysis as JSON
     super-claude --reconfigure               # re-run wizard (ignores saved .claude-setup.rc)
+    super-claude --clean-root                # move aux docs to .claude/docs/
 
 Git safety modes (--git-mode):
     ask          prompt before acting (default in interactive)
@@ -216,6 +217,7 @@ class PlannedWrite:
     exists: bool
     mode: str  # "create", "overwrite", "skip"
     reason: str = ""
+    actual_path: Optional[Path] = None
 
 
 @dataclass
@@ -224,6 +226,7 @@ class FileAction:
     action: str  # "create", "overwrite", "skip"
     lines: int = 0
     reason: str = ""
+    actual_path: Optional[Path] = None
 
 
 @dataclass
@@ -524,6 +527,75 @@ def extract_md_sections(content: str) -> dict:
     return sections
 
 
+def dedup_and_rank_commands(commands: list[str]) -> list[str]:
+    """Remove duplicates, path-specific commands, and rank by category priority.
+
+    Pure function that:
+    - Removes exact duplicates (preserving first occurrence)
+    - Removes commands containing absolute paths (/Users/, /home/, C:\\, /var/, /opt/, /tmp/)
+    - Removes bare `cd` commands to specific directories
+    - Removes commands with git commit hashes (40-char hex strings)
+    - Ranks remaining commands by category priority (install=0 ... deploy=6, other=99)
+    """
+    if not commands:
+        return []
+
+    # Absolute path prefixes to filter out
+    _ABS_PATH_MARKERS = ("/Users/", "/home/", "C:\\", "/var/", "/opt/", "/tmp/")
+
+    # 40-char hex pattern for git commit hashes
+    _COMMIT_HASH_RE = re.compile(r'\b[0-9a-f]{40}\b')
+
+    # Bare cd to a specific directory (cd /some/path or cd some/path, but not just "cd")
+    _BARE_CD_RE = re.compile(r'^cd\s+\S')
+
+    # Category patterns: (priority, list of substrings to match)
+    _CATEGORIES = [
+        (0, ["pip install", "npm install", "cargo build", "go mod", "mix deps",
+             "bundle install", "composer install", "dotnet restore",
+             "flutter pub", "dart pub"]),
+        (1, ["npm run dev", "python manage.py runserver", "flask run",
+             "cargo run", "go run", "mix phx.server", "uvicorn"]),
+        (2, ["pytest", "npm test", "cargo test", "go test", "mix test",
+             "flutter test", "dotnet test"]),
+        (3, ["eslint", "prettier", "black", "ruff", "cargo fmt", "cargo clippy"]),
+        (4, ["npm run build", "cargo build --release", "go build", "dotnet build"]),
+        (5, ["migrate", "ecto"]),
+        (6, ["deploy", "docker"]),
+    ]
+
+    # Step 1: deduplicate preserving order
+    seen = set()
+    unique = []
+    for cmd in commands:
+        if cmd not in seen:
+            seen.add(cmd)
+            unique.append(cmd)
+
+    # Step 2: filter out path-specific, bare cd, and commit-hash commands
+    filtered = []
+    for cmd in unique:
+        if any(marker in cmd for marker in _ABS_PATH_MARKERS):
+            continue
+        if _BARE_CD_RE.match(cmd):
+            continue
+        if _COMMIT_HASH_RE.search(cmd):
+            continue
+        filtered.append(cmd)
+
+    # Step 3: rank by category
+    def _priority(cmd: str) -> int:
+        cmd_lower = cmd.lower()
+        for prio, patterns in _CATEGORIES:
+            if any(p in cmd_lower for p in patterns):
+                return prio
+        return 99
+
+    filtered.sort(key=_priority)
+
+    return filtered
+
+
 def read_existing_content(root: Path) -> dict:
     """
     Mine existing project files for reusable content.
@@ -590,6 +662,7 @@ def read_existing_content(root: Path) -> dict:
                     continue
                 if any(line.lower().startswith(p) for p in CMD_PREFIXES):
                     ec["commands"].append(line)
+        ec["commands"] = dedup_and_rank_commands(ec["commands"])
         if ec["commands"]:
             ec["sources"].add("CLAUDE.md:commands")
 
@@ -678,6 +751,69 @@ def read_existing_content(root: Path) -> dict:
             break
 
     return ec
+
+
+def extract_from_document(filepath: Path) -> dict:
+    """
+    Extract project knowledge from an external document (PRD, spec, RFC, etc.).
+
+    Reads a markdown/text file and extracts:
+    - description: first non-heading paragraph
+    - architecture_notes: from sections with architecture/design/system in heading
+    - commands: from bash/sh code blocks
+    - sources: provenance tracking set
+
+    Returns a dict with keys matching existing_content format.
+    """
+    result = {
+        "description": "",
+        "architecture_notes": "",
+        "commands": [],
+        "sources": set(),
+    }
+
+    content = safe_read(filepath)
+    if not content:
+        return result
+
+    result["sources"].add("from-doc")
+
+    # Extract description: first non-heading, non-empty paragraph
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(("#", "[", "!", ">", "|", "```", "---", "*")):
+            continue
+        result["description"] = line[:300]
+        break
+
+    # Extract sections and look for architecture/design/system notes
+    sections = extract_md_sections(content)
+    arch_parts = []
+    for key, body in sections.items():
+        kl = key.lower()
+        if any(w in kl for w in ["architect", "design", "system"]):
+            if arch_parts:
+                arch_parts.append(f"\n\n**{key}:**\n{body[:2000]}")
+            else:
+                arch_parts.append(body[:3000])
+    if arch_parts:
+        result["architecture_notes"] = "".join(arch_parts)
+
+    # Extract commands from bash/sh code blocks
+    all_bash = re.findall(r"```(?:bash|sh|cmd)?\n(.*?)```", content, re.DOTALL)
+    for block in all_bash:
+        for line in block.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if any(c in line for c in TREE_CHARS):
+                continue
+            if any(line.lower().startswith(p) for p in CMD_PREFIXES):
+                result["commands"].append(line)
+
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -852,6 +988,49 @@ def scan_directory(root: Path) -> dict:
 
     result["sub_projects"] = sorted(sub_projects_seen)
 
+    # ── Sub-project details (enhanced monorepo intelligence) ──
+    result["sub_project_details"] = []
+
+    for sp in result["sub_projects"]:
+        sp_path = root / sp
+        detail = {"path": sp, "stacks": [], "frameworks": [], "has_claude_md": False}
+        detail["has_claude_md"] = (sp_path / "CLAUDE.md").exists()
+
+        # Detect stack from files in sub-project root
+        sp_files = set()
+        try:
+            for item in sp_path.iterdir():
+                if item.is_file():
+                    sp_files.add(item.name)
+        except (PermissionError, OSError):
+            pass
+
+        for stack, signals in STACK_SIGNALS.items():
+            if any(f in sp_files for f in signals["files"]):
+                detail["stacks"].append(stack)
+
+        # Detect framework from dependency files
+        for framework, keywords in FRAMEWORK_SIGNALS.items():
+            for kw in keywords:
+                if kw in sp_files:
+                    detail["frameworks"].append(framework)
+                    break
+                for dep_file in ["package.json", "requirements.txt", "Cargo.toml", "pyproject.toml"]:
+                    dep = sp_path / dep_file
+                    if dep.exists():
+                        try:
+                            content_txt = dep.read_text(encoding="utf-8", errors="ignore")[:5000]
+                            if kw.lower() in content_txt.lower():
+                                detail["frameworks"].append(framework)
+                                break
+                        except (PermissionError, OSError):
+                            pass
+                else:
+                    continue
+                break
+
+        result["sub_project_details"].append(detail)
+
     # ── Workspace dirs (monorepo top-level) ──
     for d in MONOREPO_DIRS:
         if (root / d).is_dir():
@@ -977,9 +1156,23 @@ def generate_claude_md(info: dict) -> str:
         "<!-- Target: keep this file under 300 lines. Split detail into STANDARDS.md or local CLAUDE.md files. -->",
         "",
         "This file provides guidance to Claude Code when working in this repository.", "",
-        "**Quick reference:** [QUICKSTART.md](QUICKSTART.md)",
-        "**Standards:** [STANDARDS.md](STANDARDS.md)",
-        "**Mistakes:** [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+    ]
+
+    # Adjust reference links for clean_root
+    if info.get("clean_root"):
+        L.extend([
+            "**Quick reference:** [QUICKSTART.md](.claude/docs/QUICKSTART.md)",
+            "**Standards:** [STANDARDS.md](.claude/docs/STANDARDS.md)",
+            "**Mistakes:** [ERRORS_AND_LESSONS.md](.claude/docs/ERRORS_AND_LESSONS.md)",
+        ])
+    else:
+        L.extend([
+            "**Quick reference:** [QUICKSTART.md](QUICKSTART.md)",
+            "**Standards:** [STANDARDS.md](STANDARDS.md)",
+            "**Mistakes:** [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+        ])
+
+    L += [
         "", "---", "",
         "## Routing Rules", "",
         "If the task is inside a subdirectory that has its own CLAUDE.md:",
@@ -992,6 +1185,21 @@ def generate_claude_md(info: dict) -> str:
     # Sub-projects
     if ec.get("sub_project_table") and len(ec["sub_project_table"]) > 100:
         L.extend([_mark("migrated"), ec["sub_project_table"], ""])
+    elif info.get("is_monorepo") and info.get("sub_project_details"):
+        L.extend([
+            "### Sub-Projects", "",
+            "> This is a monorepo root. Each sub-project may have its own CLAUDE.md.",
+            "> Run `super-claude <sub-project-path>` to generate sub-project docs.", "",
+            _mark("inferred"),
+            "| Directory | Stack | Framework | Local CLAUDE.md |",
+            "|-----------|-------|-----------|-----------------|",
+        ])
+        for sp_detail in info["sub_project_details"]:
+            sp_stacks = ", ".join(sp_detail["stacks"]) if sp_detail["stacks"] else "-"
+            sp_fws = ", ".join(sp_detail["frameworks"]) if sp_detail["frameworks"] else "-"
+            sp_claude = "Yes" if sp_detail["has_claude_md"] else "No"
+            L.append(f"| `{sp_detail['path']}/` | {sp_stacks} | {sp_fws} | {sp_claude} |")
+        L.append("")
     elif info["sub_projects"]:
         L.extend([_mark("inferred"), "| Directory | Notes |", "|-----------|-------|"])
         for sp in info["sub_projects"]:
@@ -1052,12 +1260,10 @@ def generate_claude_md(info: dict) -> str:
     # Commands
     L.extend(["---", "", "## Common Commands", ""])
     if ec.get("commands") and len(ec["commands"]) >= 3:
+        ranked_cmds = dedup_and_rank_commands(ec["commands"])
         L.extend([_mark("migrated"), "```bash"])
-        seen = set()
-        for cmd in ec["commands"][:20]:
-            if cmd not in seen:
-                L.append(cmd)
-                seen.add(cmd)
+        for cmd in ranked_cmds[:20]:
+            L.append(cmd)
         L.extend(["```", ""])
     else:
         L.append(_mark("inferred"))
@@ -1353,21 +1559,26 @@ def generate_claude_md(info: dict) -> str:
 
 def generate_quickstart_md(info: dict) -> str:
     ec = info.get("existing_content", {})
+    # Adjust cross-references for clean_root (from .claude/docs/, CLAUDE.md is at ../../CLAUDE.md)
+    if info.get("clean_root"):
+        claude_ref = "[CLAUDE.md](../../CLAUDE.md)"
+        standards_ref = "[STANDARDS.md](STANDARDS.md)"
+    else:
+        claude_ref = "[CLAUDE.md](CLAUDE.md)"
+        standards_ref = "[STANDARDS.md](STANDARDS.md)"
     L = [
         "<!-- AUTO-MAINTAINED by super-claude. Manual edits below the marker will be preserved. -->",
         "",
         "# Quick Start — Command Reference", "",
-        "Commands only. For context: [CLAUDE.md](CLAUDE.md). For rules: [STANDARDS.md](STANDARDS.md).",
+        f"Commands only. For context: {claude_ref}. For rules: {standards_ref}.",
         "", "---", "",
     ]
 
     if ec.get("commands") and len(ec["commands"]) >= 3:
+        ranked_cmds = dedup_and_rank_commands(ec["commands"])
         L.extend([_mark("migrated"), "## Commands", "", "```bash"])
-        seen = set()
-        for cmd in ec["commands"][:15]:
-            if cmd not in seen:
-                L.append(cmd)
-                seen.add(cmd)
+        for cmd in ranked_cmds[:15]:
+            L.append(cmd)
         L.extend(["```", ""])
     else:
         L.extend([_mark("inferred"), "## Setup", "", "```bash"])
@@ -1485,11 +1696,19 @@ def generate_quickstart_md(info: dict) -> str:
         "```", "",
     ])
 
-    L.extend(["## References", "",
-              "- [CLAUDE.md](CLAUDE.md)",
-              "- [STANDARDS.md](STANDARDS.md)",
-              "- [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
-              "", "---", f"**Last Updated:** {datetime.date.today().isoformat()}"])
+    # Adjust references for clean_root
+    if info.get("clean_root"):
+        L.extend(["## References", "",
+                  "- [CLAUDE.md](../../CLAUDE.md)",
+                  "- [STANDARDS.md](STANDARDS.md)",
+                  "- [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+                  "", "---", f"**Last Updated:** {datetime.date.today().isoformat()}"])
+    else:
+        L.extend(["## References", "",
+                  "- [CLAUDE.md](CLAUDE.md)",
+                  "- [STANDARDS.md](STANDARDS.md)",
+                  "- [ERRORS_AND_LESSONS.md](ERRORS_AND_LESSONS.md)",
+                  "", "---", f"**Last Updated:** {datetime.date.today().isoformat()}"])
 
     return "\n".join(L) + "\n"
 
@@ -1526,7 +1745,7 @@ def generate_standards_md(info: dict) -> str:
     L = [
         "# STANDARDS.md — Governance & Quality Standards", "",
         "Lean governance for this repository. Every rule is objectively verifiable.", "",
-        "**Referenced by:** [CLAUDE.md](CLAUDE.md)", "",
+        "**Referenced by:** [CLAUDE.md](../../CLAUDE.md)" if info.get("clean_root") else "**Referenced by:** [CLAUDE.md](CLAUDE.md)", "",
         "**Assumed knowledge:** Language-standard conventions (PEP 8, ESLint defaults, etc.) are assumed.",
         "This file only documents project-specific rules and deviations.",
         "", "---", "",
@@ -2042,6 +2261,7 @@ def _empty_scan_result(target: Path) -> dict:
         "is_monorepo": False,
         "monorepo_tool": "",
         "workspace_dirs": [],
+        "sub_project_details": [],
     }
 
 
@@ -2168,11 +2388,14 @@ def run_wizard(info: dict) -> dict:
 # Post-generation verification
 # ─────────────────────────────────────────────
 
-def _verify_generated(target: Path, actions: list) -> list[str]:
+def _verify_generated(target: Path, actions: list, clean_root: bool = False) -> list[str]:
     """Verify generated files exist and have expected structure. Returns list of issues."""
     issues = []
     for a in actions:
-        fp = target / a.filename
+        if clean_root and a.filename not in ("CLAUDE.md", "README.md"):
+            fp = target / ".claude" / "docs" / a.filename
+        else:
+            fp = target / a.filename
         if not fp.exists():
             issues.append(f"{a.filename}: file not written")
             continue
@@ -2220,6 +2443,8 @@ def load_rc(target: Path) -> dict:
                 result["is_monorepo"] = cp.getboolean("project", "is_monorepo")
             if cp.has_option("project", "with_ralph"):
                 result["with_ralph"] = cp.getboolean("project", "with_ralph")
+            if cp.has_option("project", "clean_root"):
+                result["clean_root"] = cp.getboolean("project", "clean_root")
         return result
     except (configparser.Error, OSError):
         return {}
@@ -2241,6 +2466,8 @@ def save_rc(target: Path, info: dict) -> None:
             cp.set("project", "monorepo_tool", info["monorepo_tool"])
     if info.get("with_ralph"):
         cp.set("project", "with_ralph", "true")
+    if info.get("clean_root"):
+        cp.set("project", "clean_root", "true")
     try:
         with open(str(_rc_path(target)), "w", encoding="utf-8") as f:
             f.write(f"# Generated by super-claude — wizard answers\n")
@@ -2252,7 +2479,7 @@ def save_rc(target: Path, info: dict) -> None:
 
 def apply_rc(info: dict, rc: dict) -> dict:
     """Merge saved RC config into scan result (RC wins for wizard fields)."""
-    for key in ("description", "is_monorepo", "monorepo_tool", "with_ralph"):
+    for key in ("description", "is_monorepo", "monorepo_tool", "with_ralph", "clean_root"):
         if key in rc and rc[key]:
             info[key] = rc[key]
     for key in ("stacks", "frameworks", "deploy"):
@@ -2269,7 +2496,8 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
         no_git_check: bool = False, with_readme: bool = False,
         with_ralph: bool = False, git_mode: str = "ask",
         interactive: bool = True, reconfigure: bool = False,
-        force_all: bool = False):
+        force_all: bool = False, from_doc: Optional[str] = None,
+        clean_root: bool = False):
 
     target = target.resolve()
 
@@ -2322,6 +2550,40 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     if with_ralph:
         info["with_ralph"] = True
 
+    # ── Propagate clean_root to info ──
+    info["clean_root"] = clean_root
+    # Inherit clean_root from RC if not explicitly set via CLI
+    if not clean_root and rc.get("clean_root"):
+        clean_root = True
+        info["clean_root"] = True
+
+    # ── Import from external document ──
+    if from_doc:
+        doc_path = Path(from_doc)
+        if not doc_path.is_absolute():
+            doc_path = target / doc_path
+        doc_data = extract_from_document(doc_path)
+        ec = info.get("existing_content", {})
+        if not ec:
+            ec = {"description": "", "architecture_notes": "", "commands": [], "sources": set()}
+            info["existing_content"] = ec
+        # Fill gaps: doc content doesn't overwrite existing
+        if not ec.get("description") and doc_data["description"]:
+            ec["description"] = doc_data["description"]
+        if not ec.get("architecture_notes") and doc_data["architecture_notes"]:
+            ec["architecture_notes"] = doc_data["architecture_notes"]
+        if doc_data["commands"]:
+            existing_cmds = set(ec.get("commands", []))
+            for cmd in doc_data["commands"]:
+                if cmd not in existing_cmds:
+                    ec.setdefault("commands", []).append(cmd)
+        if doc_data["sources"]:
+            ec.setdefault("sources", set()).update(doc_data["sources"])
+        # Also fill top-level description if empty
+        if not info.get("description") and doc_data["description"]:
+            info["description"] = doc_data["description"]
+        print(f"  From-doc: {doc_path.name}")
+
     # ── Interactive wizard for empty projects ──
     needs_wizard = (info["is_empty"] and not info["stacks"]) or reconfigure
     if needs_wizard and interactive and not dry_run:
@@ -2343,23 +2605,28 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     generators = {fn: gen for fn, gen in files_to_generate}
     _content_cache = {}  # cache content generated during diff check
     for filename, generator in files_to_generate:
-        exists = target_exists and (target / filename).exists()
+        # Determine actual path: clean_root moves aux docs to .claude/docs/
+        if clean_root and filename not in ("CLAUDE.md", "README.md"):
+            actual_path = target / ".claude" / "docs" / filename
+        else:
+            actual_path = target / filename
+        exists = target_exists and actual_path.exists()
         if exists and not force and not force_all:
-            write_plan.append(PlannedWrite(filename, exists, "skip", reason="exists"))
+            write_plan.append(PlannedWrite(filename, exists, "skip", reason="exists", actual_path=actual_path))
         elif exists and (force or force_all):
             # --force: skip if content unchanged; --force-all: always overwrite
             if force and not force_all:
                 new_content = generator(info)
                 _content_cache[filename] = new_content
-                old_content = (target / filename).read_text(encoding="utf-8", errors="ignore")
+                old_content = actual_path.read_text(encoding="utf-8", errors="ignore")
                 if new_content == old_content:
-                    write_plan.append(PlannedWrite(filename, exists, "skip", reason="unchanged"))
+                    write_plan.append(PlannedWrite(filename, exists, "skip", reason="unchanged", actual_path=actual_path))
                 else:
-                    write_plan.append(PlannedWrite(filename, exists, "overwrite"))
+                    write_plan.append(PlannedWrite(filename, exists, "overwrite", actual_path=actual_path))
             else:
-                write_plan.append(PlannedWrite(filename, exists, "overwrite"))
+                write_plan.append(PlannedWrite(filename, exists, "overwrite", actual_path=actual_path))
         else:
-            write_plan.append(PlannedWrite(filename, exists, "create"))
+            write_plan.append(PlannedWrite(filename, exists, "create", actual_path=actual_path))
 
     overwrite_targets = [pw.filename for pw in write_plan if pw.mode == "overwrite"]
 
@@ -2416,6 +2683,12 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     # ── Generate — driven by write plan ──
     # Cache content that was already generated during write plan diff check
     _content_cache = {}
+
+    # Create .claude/docs/ directory if needed for clean_root
+    if clean_root and not dry_run:
+        docs_dir = target / ".claude" / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+
     for pw in write_plan:
         if pw.mode == "skip":
             result.actions.append(FileAction(pw.filename, "skip", reason=pw.reason))
@@ -2428,14 +2701,17 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
             content = generators[pw.filename](info)
         line_count = content.count("\n")
 
+        # Use actual_path (respects clean_root placement)
+        write_path = pw.actual_path if pw.actual_path else target / pw.filename
         if not dry_run:
-            (target / pw.filename).write_text(content, encoding="utf-8")
+            write_path.parent.mkdir(parents=True, exist_ok=True)
+            write_path.write_text(content, encoding="utf-8")
 
         result.actions.append(FileAction(pw.filename, pw.mode, lines=line_count))
 
     # ── Post-generation verification ──
     if not dry_run and result.created_count > 0:
-        errors = _verify_generated(target, [a for a in result.actions if a.action in ("create", "overwrite")])
+        errors = _verify_generated(target, [a for a in result.actions if a.action in ("create", "overwrite")], clean_root=clean_root)
         if errors:
             print(f"\n  ⚠ Verification issues:")
             for err in errors:
@@ -2472,6 +2748,9 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
 
     if "README.md" not in filenames:
         print(f"  Note: README.md not included (use --with-readme to generate)")
+
+    if clean_root:
+        print(f"  Note: .claude/ may be in .gitignore. Ensure .claude/docs/ is tracked if needed.")
 
     if not dry_run and result.created_count > 0:
         print(f"\n  Next steps:")
@@ -2558,6 +2837,7 @@ def plan_json(target: Path, with_readme: bool = False) -> dict:
         "has_git": info.get("has_git", False),
         "existing_docs": info.get("existing_docs", []),
         "sub_projects": info.get("sub_projects", []),
+        "sub_project_details": info.get("sub_project_details", []),
         "extracted_from": sources,
         "write_plan": write_plan,
         "git": {
@@ -2604,6 +2884,10 @@ Examples:
                         help="Re-run wizard even if .claude-setup.rc exists")
     parser.add_argument("--force-all", action="store_true",
                         help="Overwrite all files unconditionally (--force skips unchanged)")
+    parser.add_argument("--from-doc", type=str, default=None,
+                        help="Bootstrap from an existing document (PRD, spec, RFC, etc.)")
+    parser.add_argument("--clean-root", action="store_true",
+                        help="Move auxiliary docs to .claude/docs/, keep only CLAUDE.md and README.md at root")
 
     args = parser.parse_args()
 
@@ -2633,6 +2917,8 @@ Examples:
         interactive=interactive,
         reconfigure=args.reconfigure,
         force_all=args.force_all,
+        from_doc=args.from_doc,
+        clean_root=args.clean_root,
     )
 
 

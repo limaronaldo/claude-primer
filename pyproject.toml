@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "superclaudeai"
-version = "1.2.0"
+version = "1.3.0"
 description = "Bootstrap Claude Code knowledge architecture (CLAUDE.md, STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md)"
 readme = "README.md"
 license = "MIT"
@@ -13,7 +13,7 @@ authors = [
     { name = "Ronaldo Lima" },
     { name = "Breno Lima" },
 ]
-keywords = ["claude", "claude-code", "documentation", "bootstrap", "ai", "knowledge-architecture"]
+keywords = ["claude", "claude-code", "documentation", "bootstrap", "ai", "knowledge-architecture", "ralph"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
