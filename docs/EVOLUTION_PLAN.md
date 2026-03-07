@@ -2,8 +2,8 @@
 
 Reference document for incremental evolution. Ordered by trust: correctness first, architecture second, features third.
 
-**Current version:** 1.3.2
-**Test coverage:** 107 Python tests, 110 Node.js tests
+**Current version:** 1.3.4
+**Test coverage:** 127 Python tests, 110 Node.js tests
 
 ---
 
@@ -57,18 +57,17 @@ Reference document for incremental evolution. Ordered by trust: correctness firs
 
 ---
 
-## Phase 6 — Confidence-aware extraction
+## Phase 6 — Confidence-aware extraction ✅
 
 ### 6.1 Add confidence to extracted sections
-- **Model:** `{value, source, confidence}` where confidence is high/medium/low
+- **Model:** `ScoredValue(value, source, confidence)` dataclass
 - **Rule:** Structured existing > strong extracted > stack inference > placeholder
-- **Status:** PARTIAL — extraction works but confidence scoring not yet exposed
+- **Status:** DONE — `ScoredValue` dataclass, confidence scoring in `scan_directory()`, exposed in `--plan-json`, `_prov()` combined marker
 
 ### Known issue: extraction idempotency
 - Running `--force` repeatedly can accumulate migrated content
 - Root cause: extraction re-reads generated sections as "existing content"
 - Mitigation: `--force` now produces stable output (fixed in v1.1.0)
-- Full fix: needs confidence-based filtering of re-extracted content
 
 ---
 
@@ -96,29 +95,42 @@ Reference document for incremental evolution. Ordered by trust: correctness firs
 ## Phase 10 — Tests ✅
 
 ### 10.1 Regression suite
-- **Status:** DONE — 107 Python tests across 19 test classes
+- **Status:** DONE — 127 Python tests across 23 test classes
 
 ### 10.2 Golden output tests
 - **Status:** DONE — covered in TestGeneratedContent + TestStackDetection
 
 ---
 
+## Phase 11 — Template system ✅
+
+### 11.1 User-provided templates
+- **Status:** DONE — `.claude-primer/templates/` directory, `--template-dir` flag
+- Section-level overrides matched by `## Header` name
+- `{{variable}}` substitution: project_name, tech_stack, frameworks, tier, deploy, date, description
+
+---
+
+## Phase 12 — Watch mode ✅
+
+### 12.1 Poll-based file watcher
+- **Status:** DONE — `--watch`, `--watch-interval`, `--watch-auto` flags
+- Monitors config files (package.json, pyproject.toml, etc.) via `os.stat()` polling
+- Diff summary shows stack/framework/sub-project changes
+- Graceful Ctrl+C shutdown
+
+---
+
+## Phase 13 — Multi-agent context ✅
+
+### 13.1 Multi-agent output
+- **Status:** DONE — `--agent` flag: claude, cursor, copilot, windsurf, aider, codex, all
+- `--format` flag: markdown, yaml, json
+- Agent-specific output files: `.cursor/rules/project.mdc`, `.github/copilot-instructions.md`, `.windsurfrules`, `.aider/conventions.md`, `AGENTS.md`
+
+---
+
 ## Future Phases
-
-### Phase 11 — Template system
-- User-provided templates for generated sections
-- Override default content with project-specific templates
-- **Status:** Not started
-
-### Phase 12 — Watch mode
-- Monitor project changes and suggest CLAUDE.md updates
-- Integrate with git hooks for automatic maintenance
-- **Status:** Not started
-
-### Phase 13 — Multi-agent context
-- Generate context files optimized for specific AI agents beyond Claude
-- Configurable output format (markdown, YAML, JSON)
-- **Status:** Not started
 
 ---
 
