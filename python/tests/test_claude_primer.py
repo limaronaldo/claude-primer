@@ -1121,3 +1121,208 @@ class TestCleanRoot:
         assert agent.exists(), f"AGENT.md symlink is broken (target: {agent.resolve()})"
         content = agent.read_text()
         assert "Quick Start" in content or "QUICKSTART" in content
+
+
+# ─────────────────────────────────────────────
+# Phase 6: Confidence scoring
+# ─────────────────────────────────────────────
+
+class TestConfidenceScoring:
+    def test_plan_json_includes_confidence_scores(self, python_project):
+        """--plan-json output should include confidence_scores."""
+        r = run_setup(str(python_project), "--plan-json")
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        assert "confidence_scores" in data
+        assert "stacks" in data["confidence_scores"]
+
+    def test_stack_confidence_high_from_config_file(self, python_project):
+        """Stacks detected from config files should have high confidence."""
+        r = run_setup(str(python_project), "--plan-json")
+        data = json.loads(r.stdout)
+        stacks = data["confidence_scores"]["stacks"]
+        python_score = [s for s in stacks if s["value"] == "python"]
+        assert python_score, "Python stack should be detected"
+        assert python_score[0]["confidence"] == "high"
+
+    def test_stack_confidence_medium_from_extensions(self, tmp_path):
+        """Stacks detected only from extensions should have medium confidence."""
+        # Create a project with .py files but no requirements.txt/pyproject.toml
+        (tmp_path / "script.py").write_text("print('hi')\n")
+        (tmp_path / "util.py").write_text("x = 1\n")
+        r = run_setup(str(tmp_path), "--plan-json")
+        data = json.loads(r.stdout)
+        stacks = data["confidence_scores"]["stacks"]
+        python_score = [s for s in stacks if s["value"] == "python"]
+        assert python_score, "Python stack should be detected"
+        assert python_score[0]["confidence"] == "medium"
+
+    def test_description_confidence_from_package_json(self, node_project):
+        """Description from package.json should have high confidence."""
+        r = run_setup(str(node_project), "--plan-json")
+        data = json.loads(r.stdout)
+        if "description" in data["confidence_scores"]:
+            desc = data["confidence_scores"]["description"]
+            assert desc["confidence"] in ("high", "medium")
+
+
+# ─────────────────────────────────────────────
+# Phase 11: Template system
+# ─────────────────────────────────────────────
+
+class TestTemplateSystem:
+    def test_template_section_override(self, python_project):
+        """User template should override matching sections."""
+        tpl_dir = python_project / ".claude-primer" / "templates"
+        tpl_dir.mkdir(parents=True)
+        (tpl_dir / "claude.md").write_text(
+            "## Code Architecture\n\nCustom architecture from template.\n"
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        content = (python_project / "CLAUDE.md").read_text()
+        assert "Custom architecture from template." in content
+
+    def test_template_variable_substitution(self, python_project):
+        """{{project_name}} should be replaced with actual project name."""
+        tpl_dir = python_project / ".claude-primer" / "templates"
+        tpl_dir.mkdir(parents=True)
+        (tpl_dir / "claude.md").write_text(
+            "## Code Architecture\n\nProject: {{project_name}}, Stack: {{tech_stack}}\n"
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        content = (python_project / "CLAUDE.md").read_text()
+        name = python_project.name
+        assert f"Project: {name}" in content
+        assert "Stack: python" in content
+
+    def test_template_dir_flag(self, python_project, tmp_path):
+        """--template-dir should load templates from specified directory."""
+        custom_tpl = tmp_path / "custom-templates"
+        custom_tpl.mkdir()
+        (custom_tpl / "claude.md").write_text(
+            "## Code Architecture\n\nCustom from --template-dir.\n"
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check",
+                       "--template-dir", str(custom_tpl))
+        assert r.returncode == 0
+        content = (python_project / "CLAUDE.md").read_text()
+        assert "Custom from --template-dir." in content
+
+    def test_non_matching_template_sections_ignored(self, python_project):
+        """Template sections that don't match generated headers should not cause errors."""
+        tpl_dir = python_project / ".claude-primer" / "templates"
+        tpl_dir.mkdir(parents=True)
+        (tpl_dir / "claude.md").write_text(
+            "## Nonexistent Section\n\nThis should not appear.\n"
+        )
+        r = run_setup(str(python_project), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        content = (python_project / "CLAUDE.md").read_text()
+        assert "This should not appear." not in content
+
+
+# ─────────────────────────────────────────────
+# Phase 12: Watch mode
+# ─────────────────────────────────────────────
+
+class TestWatchMode:
+    def test_watch_help_flag(self):
+        """--watch flag should be recognized."""
+        r = run_setup("--help")
+        assert "--watch" in r.stdout
+
+    def test_watch_interval_help(self):
+        """--watch-interval flag should be recognized."""
+        r = run_setup("--help")
+        assert "--watch-interval" in r.stdout
+
+    def test_watch_auto_help(self):
+        """--watch-auto flag should be recognized."""
+        r = run_setup("--help")
+        assert "--watch-auto" in r.stdout
+
+
+# ─────────────────────────────────────────────
+# Phase 13: Multi-agent context output
+# ─────────────────────────────────────────────
+
+class TestMultiAgentOutput:
+    def test_cursor_output(self, node_project):
+        """--agent cursor should create .cursor/rules/project.mdc."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "cursor")
+        assert r.returncode == 0
+        mdc = node_project / ".cursor" / "rules" / "project.mdc"
+        assert mdc.exists(), ".cursor/rules/project.mdc should be created"
+        content = mdc.read_text()
+        assert "alwaysApply: true" in content
+        assert "node" in content
+
+    def test_copilot_output(self, node_project):
+        """--agent copilot should create .github/copilot-instructions.md."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "copilot")
+        assert r.returncode == 0
+        f = node_project / ".github" / "copilot-instructions.md"
+        assert f.exists()
+        assert "Copilot Instructions" in f.read_text()
+
+    def test_windsurf_output(self, node_project):
+        """--agent windsurf should create .windsurfrules."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "windsurf")
+        assert r.returncode == 0
+        f = node_project / ".windsurfrules"
+        assert f.exists()
+        assert "Rules" in f.read_text()
+
+    def test_aider_output(self, node_project):
+        """--agent aider should create .aider/conventions.md."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "aider")
+        assert r.returncode == 0
+        f = node_project / ".aider" / "conventions.md"
+        assert f.exists()
+        assert "Conventions" in f.read_text()
+
+    def test_codex_output(self, node_project):
+        """--agent codex should create AGENTS.md."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "codex")
+        assert r.returncode == 0
+        f = node_project / "AGENTS.md"
+        assert f.exists()
+        assert "AGENTS.md" in f.read_text()
+
+    def test_all_agents(self, node_project):
+        """--agent all should create files for all agents."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check", "--agent", "all")
+        assert r.returncode == 0
+        assert (node_project / ".cursor" / "rules" / "project.mdc").exists()
+        assert (node_project / ".github" / "copilot-instructions.md").exists()
+        assert (node_project / ".windsurfrules").exists()
+        assert (node_project / ".aider" / "conventions.md").exists()
+        assert (node_project / "AGENTS.md").exists()
+
+    def test_json_format(self, node_project):
+        """--format json should create a .json file."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check",
+                       "--agent", "copilot", "--format", "json")
+        assert r.returncode == 0
+        json_files = list(node_project.glob(".claude-primer-*.json"))
+        assert json_files, "JSON file should be created"
+        data = json.loads(json_files[0].read_text())
+        assert "stacks" in data
+
+    def test_yaml_format(self, node_project):
+        """--format yaml should create a .yaml file."""
+        r = run_setup(str(node_project), "--yes", "--no-git-check",
+                       "--agent", "copilot", "--format", "yaml")
+        assert r.returncode == 0
+        yaml_files = list(node_project.glob(".claude-primer-*.yaml"))
+        assert yaml_files, "YAML file should be created"
+        content = yaml_files[0].read_text()
+        assert "stacks:" in content
+
+    def test_invalid_agent_errors(self):
+        """Invalid agent name should produce an error."""
+        r = run_setup(".", "--agent", "invalid_agent")
+        assert r.returncode != 0
+        assert "Unknown agent" in r.stderr

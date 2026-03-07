@@ -210,6 +210,29 @@ TREE_CHARS = {"├", "│", "└", "─"}
 # Result tracking (replaces string-based counters)
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+# Confidence scoring
+# ─────────────────────────────────────────────
+
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_MEDIUM = "medium"
+CONFIDENCE_LOW = "low"
+
+
+@dataclass
+class ScoredValue:
+    """A value tagged with its source and confidence level."""
+    value: str
+    source: str       # e.g. "package.json", "README.md", "stack-inference", "placeholder"
+    confidence: str   # "high", "medium", "low"
+
+    def __str__(self):
+        return self.value
+
+    def as_dict(self) -> dict:
+        return {"value": self.value, "source": self.source, "confidence": self.confidence}
+
+
 @dataclass
 class PlannedWrite:
     """Pre-computed write decision for a single file."""
@@ -845,6 +868,7 @@ def scan_directory(root: Path) -> dict:
         "is_monorepo": False,
         "monorepo_tool": "",
         "workspace_dirs": [],
+        "confidence_scores": {},  # field -> ScoredValue
     }
 
     all_files = []
@@ -1056,6 +1080,50 @@ def scan_directory(root: Path) -> dict:
         if not result["description"] and result["existing_content"].get("description"):
             result["description"] = result["existing_content"]["description"]
 
+    # ── Confidence scoring ──
+    scores = {}
+
+    # Stack confidence
+    stack_scores = []
+    for stack in result["stacks"]:
+        signals = STACK_SIGNALS.get(stack, {})
+        found_file = any(f in root_files for f in signals.get("files", []))
+        if found_file:
+            stack_scores.append(ScoredValue(stack, "root config file", CONFIDENCE_HIGH))
+        else:
+            stack_scores.append(ScoredValue(stack, "file extensions", CONFIDENCE_MEDIUM))
+    scores["stacks"] = stack_scores
+
+    # Framework confidence
+    fw_scores = []
+    for fw in result["frameworks"]:
+        keywords = FRAMEWORK_SIGNALS.get(fw, [])
+        if any(kw in root_files for kw in keywords):
+            fw_scores.append(ScoredValue(fw, "root file", CONFIDENCE_HIGH))
+        else:
+            fw_scores.append(ScoredValue(fw, "dependency file keyword", CONFIDENCE_MEDIUM))
+    scores["frameworks"] = fw_scores
+
+    # Description confidence
+    if result["description"]:
+        ec = result.get("existing_content", {})
+        ec_sources = ec.get("sources", set())
+        if "README.md" in ec_sources:
+            scores["description"] = ScoredValue(result["description"], "README.md", CONFIDENCE_MEDIUM)
+        elif result.get("scripts"):  # came from package.json
+            scores["description"] = ScoredValue(result["description"], "package.json", CONFIDENCE_HIGH)
+        else:
+            scores["description"] = ScoredValue(result["description"], "inferred", CONFIDENCE_LOW)
+
+    # Command confidence
+    ec = result.get("existing_content", {})
+    cmd_scores = []
+    for cmd in ec.get("commands", []):
+        cmd_scores.append(ScoredValue(cmd, "extracted from docs", CONFIDENCE_MEDIUM))
+    scores["commands"] = cmd_scores
+
+    result["confidence_scores"] = scores
+
     return result
 
 
@@ -1123,6 +1191,113 @@ def detect_project_tier(info: dict) -> dict:
 def _mark(tag: str) -> str:
     """Inline HTML comment for provenance. Invisible in rendered markdown."""
     return f"<!-- [{tag}] -->"
+
+
+def _confidence_comment(confidence: str) -> str:
+    """Inline HTML comment for confidence level. Invisible in rendered markdown."""
+    return f"<!-- confidence: {confidence} -->"
+
+
+def _prov(tag: str) -> str:
+    """Combined provenance + confidence marker. Maps provenance tags to confidence."""
+    conf = {"migrated": "high", "inferred": "medium", "placeholder": "low"}.get(tag, "low")
+    return f"<!-- [{tag}] confidence: {conf} -->"
+
+
+# ─────────────────────────────────────────────
+# Template system
+# ─────────────────────────────────────────────
+
+# Map template filenames to output filenames
+_TEMPLATE_FILE_MAP = {
+    "claude.md": "CLAUDE.md",
+    "standards.md": "STANDARDS.md",
+    "quickstart.md": "QUICKSTART.md",
+    "errors.md": "ERRORS_AND_LESSONS.md",
+}
+
+
+def load_templates(template_dir: Path) -> dict:
+    """Load user template overrides from a directory.
+
+    Returns {output_filename: {section_name_lower: section_body}} for section-level overrides.
+    """
+    templates = {}
+    if not template_dir.is_dir():
+        return templates
+
+    for tf in template_dir.iterdir():
+        if not tf.is_file() or not tf.name.endswith(".md"):
+            continue
+        output_file = _TEMPLATE_FILE_MAP.get(tf.name.lower(), tf.name.upper())
+        content = tf.read_text(encoding="utf-8", errors="ignore")
+        sections = extract_md_sections(content)
+        if sections:
+            templates[output_file] = {k.lower(): v for k, v in sections.items()}
+        elif content.strip():
+            # No headings — use entire content as a "full" override
+            templates[output_file] = {"__full__": content}
+    return templates
+
+
+def _build_template_variables(info: dict) -> dict:
+    """Build the variable substitution map for templates."""
+    tier = info.get("tier", {})
+    return {
+        "project_name": info.get("name", ""),
+        "tech_stack": ", ".join(info.get("stacks", [])),
+        "frameworks": ", ".join(info.get("frameworks", [])),
+        "tier": f"T{tier.get('tier', 3)}",
+        "deploy": ", ".join(info.get("deploy", [])),
+        "date": datetime.date.today().isoformat(),
+        "description": info.get("description", ""),
+    }
+
+
+def apply_template_substitution(content: str, variables: dict) -> str:
+    """Replace {{variable}} placeholders with values."""
+    for key, val in variables.items():
+        content = content.replace("{{" + key + "}}", val)
+    return content
+
+
+def merge_with_templates(generated: str, templates: dict, variables: dict, output_file: str) -> str:
+    """Merge generated content with user template overrides.
+
+    For each ## section in the template, replace the corresponding section in generated output.
+    """
+    file_templates = templates.get(output_file, {})
+    if not file_templates:
+        return generated
+
+    # Full override
+    if "__full__" in file_templates:
+        return apply_template_substitution(file_templates["__full__"], variables)
+
+    lines = generated.split("\n")
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Check if this is a ## header that matches a template section
+        if line.startswith("## "):
+            header = line[3:].strip().lower()
+            if header in file_templates:
+                # Add the header line
+                result.append(line)
+                # Skip the original section body (until next ## or ---)
+                i += 1
+                while i < len(lines) and not lines[i].startswith("## ") and not (lines[i].strip() == "---" and i + 1 < len(lines) and lines[i + 1].startswith("## ")):
+                    i += 1
+                # Insert template content
+                template_body = apply_template_substitution(file_templates[header], variables)
+                result.append(template_body.rstrip())
+                result.append("")
+                continue
+        result.append(line)
+        i += 1
+
+    return "\n".join(result)
 
 
 def _root_doc_refs(clean_root: bool) -> dict[str, str]:
@@ -2541,7 +2716,8 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
         with_ralph: bool = False, git_mode: str = "ask",
         interactive: bool = True, reconfigure: bool = False,
         force_all: bool = False, from_doc: Optional[str] = None,
-        clean_root: bool = False):
+        clean_root: bool = False, template_dir: Optional[str] = None,
+        agents: Optional[list] = None, output_format: str = "markdown"):
 
     target = target.resolve()
 
@@ -2641,6 +2817,14 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
 
     # ── Tier detection (after wizard so it sees wizard answers) ──
     info["tier"] = detect_project_tier(info)
+
+    # ── Load user templates ──
+    tpl_dir = Path(template_dir) if template_dir else target / ".claude-primer" / "templates"
+    user_templates = load_templates(tpl_dir) if tpl_dir.is_dir() else {}
+    if user_templates:
+        info["_templates"] = user_templates
+        info["_template_vars"] = _build_template_variables(info)
+        print(f"  Templates: loaded from {tpl_dir}")
 
     ec = info.get("existing_content", {})
 
@@ -2743,6 +2927,9 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
             content = _content_cache[pw.filename]
         else:
             content = generators[pw.filename](info)
+        # Apply user template overrides
+        if user_templates:
+            content = merge_with_templates(content, user_templates, info.get("_template_vars", {}), pw.filename)
         line_count = content.count("\n")
 
         # Use actual_path (respects clean_root placement)
@@ -2765,6 +2952,11 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     if with_ralph:
         ralph_actions = setup_ralph(target, info, dry_run=dry_run, force=force)
         result.actions.extend(ralph_actions)
+
+    # ── Multi-agent output ──
+    if agents:
+        agent_actions = write_agent_files(target, info, agents, fmt=output_format, dry_run=dry_run)
+        result.actions.extend(agent_actions)
 
     # Memory directory
     mem = target / ".claude" / "projects"
@@ -2824,6 +3016,396 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     return result
 
 
+# ─────────────────────────────────────────────
+# Multi-agent context output
+# ─────────────────────────────────────────────
+
+AGENT_CONVENTIONS = {
+    "claude": {"file": "CLAUDE.md", "dir": None},
+    "cursor": {"file": ".cursor/rules/project.mdc", "dir": ".cursor/rules"},
+    "copilot": {"file": ".github/copilot-instructions.md", "dir": ".github"},
+    "windsurf": {"file": ".windsurfrules", "dir": None},
+    "aider": {"file": ".aider/conventions.md", "dir": ".aider"},
+    "codex": {"file": "AGENTS.md", "dir": None},
+}
+
+
+def _agent_core_context(info: dict) -> dict:
+    """Extract core context shared by all agent formats."""
+    ec = info.get("existing_content", {})
+    tier = info.get("tier", {})
+    return {
+        "project_name": info.get("name", ""),
+        "description": info.get("description", "") or ec.get("description", ""),
+        "stacks": info.get("stacks", []),
+        "frameworks": info.get("frameworks", []),
+        "deploy": info.get("deploy", []),
+        "tier": f"T{tier.get('tier', 3)}",
+        "commands": ec.get("commands", []),
+        "architecture": ec.get("architecture_notes", ""),
+        "env_notes": ec.get("env_notes", ""),
+        "formatting_rules": ec.get("formatting_rules", []),
+        "test_dirs": info.get("test_dirs", []),
+        "sub_projects": info.get("sub_projects", []),
+        "is_monorepo": info.get("is_monorepo", False),
+    }
+
+
+def _generate_cursor_rules(info: dict) -> str:
+    """Generate .cursor/rules/project.mdc (Cursor rules format with frontmatter)."""
+    ctx = _agent_core_context(info)
+    lines = [
+        "---",
+        f"description: Project context for {ctx['project_name']}",
+        'globs: ["**/*"]',
+        "alwaysApply: true",
+        "---",
+        "",
+        f"# {ctx['project_name']}",
+        "",
+    ]
+    if ctx["description"]:
+        lines.extend([ctx["description"], ""])
+    lines.extend([
+        "## Tech Stack",
+        "",
+        f"- **Languages:** {', '.join(ctx['stacks']) or 'not detected'}",
+        f"- **Frameworks:** {', '.join(ctx['frameworks']) or 'none'}",
+    ])
+    if ctx["deploy"]:
+        lines.append(f"- **Deploy:** {', '.join(ctx['deploy'])}")
+    lines.append("")
+    if ctx["commands"]:
+        lines.extend(["## Commands", "", "```bash"])
+        for cmd in ctx["commands"][:15]:
+            lines.append(cmd)
+        lines.extend(["```", ""])
+    if ctx["architecture"]:
+        lines.extend(["## Architecture", "", ctx["architecture"][:2000], ""])
+    if ctx["formatting_rules"]:
+        lines.extend(["## Code Style", ""])
+        for rule in ctx["formatting_rules"][:10]:
+            lines.append(f"- {rule}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _generate_copilot_instructions(info: dict) -> str:
+    """Generate .github/copilot-instructions.md."""
+    ctx = _agent_core_context(info)
+    lines = [
+        f"# {ctx['project_name']} — Copilot Instructions",
+        "",
+    ]
+    if ctx["description"]:
+        lines.extend([ctx["description"], ""])
+    lines.extend([
+        "## Project Overview",
+        "",
+        f"- **Stack:** {', '.join(ctx['stacks']) or 'not detected'}",
+        f"- **Frameworks:** {', '.join(ctx['frameworks']) or 'none'}",
+        f"- **Tier:** {ctx['tier']}",
+        "",
+    ])
+    if ctx["commands"]:
+        lines.extend(["## Common Commands", "", "```bash"])
+        for cmd in ctx["commands"][:15]:
+            lines.append(cmd)
+        lines.extend(["```", ""])
+    if ctx["architecture"]:
+        lines.extend(["## Architecture", "", ctx["architecture"][:2000], ""])
+    if ctx["formatting_rules"]:
+        lines.extend(["## Coding Conventions", ""])
+        for rule in ctx["formatting_rules"][:10]:
+            lines.append(f"- {rule}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _generate_windsurf_rules(info: dict) -> str:
+    """Generate .windsurfrules."""
+    ctx = _agent_core_context(info)
+    lines = [
+        f"# {ctx['project_name']} Rules",
+        "",
+    ]
+    if ctx["description"]:
+        lines.extend([ctx["description"], ""])
+    lines.extend([
+        f"Stack: {', '.join(ctx['stacks']) or 'not detected'}",
+        f"Frameworks: {', '.join(ctx['frameworks']) or 'none'}",
+        "",
+    ])
+    if ctx["commands"]:
+        lines.extend(["## Commands", "", "```bash"])
+        for cmd in ctx["commands"][:15]:
+            lines.append(cmd)
+        lines.extend(["```", ""])
+    if ctx["architecture"]:
+        lines.extend(["## Architecture", "", ctx["architecture"][:2000], ""])
+    if ctx["formatting_rules"]:
+        lines.extend(["## Style", ""])
+        for rule in ctx["formatting_rules"][:10]:
+            lines.append(f"- {rule}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _generate_aider_conventions(info: dict) -> str:
+    """Generate .aider/conventions.md."""
+    ctx = _agent_core_context(info)
+    lines = [
+        f"# Conventions for {ctx['project_name']}",
+        "",
+        f"**Stack:** {', '.join(ctx['stacks']) or 'not detected'}",
+        f"**Frameworks:** {', '.join(ctx['frameworks']) or 'none'}",
+        "",
+    ]
+    if ctx["test_dirs"]:
+        lines.extend(["## Test Directories", ""])
+        for td in ctx["test_dirs"][:10]:
+            lines.append(f"- `{td}/`")
+        lines.append("")
+    if ctx["commands"]:
+        lines.extend(["## Key Commands", "", "```bash"])
+        for cmd in ctx["commands"][:15]:
+            lines.append(cmd)
+        lines.extend(["```", ""])
+    if ctx["formatting_rules"]:
+        lines.extend(["## Formatting", ""])
+        for rule in ctx["formatting_rules"][:10]:
+            lines.append(f"- {rule}")
+        lines.append("")
+    if ctx["architecture"]:
+        lines.extend(["## Architecture Notes", "", ctx["architecture"][:2000], ""])
+    return "\n".join(lines) + "\n"
+
+
+def _generate_codex_agents(info: dict) -> str:
+    """Generate AGENTS.md (OpenAI Codex format)."""
+    ctx = _agent_core_context(info)
+    lines = [
+        f"# AGENTS.md",
+        "",
+        f"## {ctx['project_name']}",
+        "",
+    ]
+    if ctx["description"]:
+        lines.extend([ctx["description"], ""])
+    lines.extend([
+        "## Workspace",
+        "",
+        f"- **Languages:** {', '.join(ctx['stacks']) or 'not detected'}",
+        f"- **Frameworks:** {', '.join(ctx['frameworks']) or 'none'}",
+    ])
+    if ctx["is_monorepo"]:
+        lines.append(f"- **Monorepo:** yes")
+        if ctx["sub_projects"]:
+            lines.append(f"- **Sub-projects:** {', '.join(ctx['sub_projects'][:10])}")
+    lines.append("")
+    if ctx["commands"]:
+        lines.extend(["## Setup & Commands", "", "```bash"])
+        for cmd in ctx["commands"][:15]:
+            lines.append(cmd)
+        lines.extend(["```", ""])
+    if ctx["architecture"]:
+        lines.extend(["## Architecture", "", ctx["architecture"][:2000], ""])
+    return "\n".join(lines) + "\n"
+
+
+_AGENT_GENERATORS = {
+    "cursor": _generate_cursor_rules,
+    "copilot": _generate_copilot_instructions,
+    "windsurf": _generate_windsurf_rules,
+    "aider": _generate_aider_conventions,
+    "codex": _generate_codex_agents,
+}
+
+
+def _format_as_yaml(data: dict, indent: int = 0) -> str:
+    """Minimal YAML serializer for context data (stdlib only)."""
+    lines = []
+    prefix = "  " * indent
+    for key, val in data.items():
+        if isinstance(val, list):
+            if not val:
+                lines.append(f"{prefix}{key}: []")
+            else:
+                lines.append(f"{prefix}{key}:")
+                for item in val:
+                    if isinstance(item, dict):
+                        lines.append(f"{prefix}  -")
+                        for k2, v2 in item.items():
+                            lines.append(f"{prefix}    {k2}: {v2}")
+                    else:
+                        lines.append(f"{prefix}  - {item}")
+        elif isinstance(val, dict):
+            lines.append(f"{prefix}{key}:")
+            lines.append(_format_as_yaml(val, indent + 1))
+        elif isinstance(val, bool):
+            lines.append(f"{prefix}{key}: {'true' if val else 'false'}")
+        else:
+            # Quote strings that contain special chars
+            sv = str(val)
+            if any(c in sv for c in (":", "#", "\n", '"')):
+                sv = '"' + sv.replace('"', '\\"').replace("\n", "\\n") + '"'
+            lines.append(f"{prefix}{key}: {sv}")
+    return "\n".join(lines)
+
+
+def write_agent_files(target: Path, info: dict, agents: list, fmt: str = "markdown",
+                      dry_run: bool = False) -> list:
+    """Generate context files for specified AI agents."""
+    actions = []
+    ctx = _agent_core_context(info)
+
+    for agent in agents:
+        if agent == "claude":
+            continue  # Claude files handled by the main pipeline
+
+        conv = AGENT_CONVENTIONS.get(agent)
+        if not conv:
+            continue
+
+        # Generate content
+        generator = _AGENT_GENERATORS.get(agent)
+        if not generator:
+            continue
+
+        if fmt == "markdown":
+            content = generator(info)
+            filepath = target / conv["file"]
+        elif fmt == "json":
+            content = json.dumps(ctx, indent=2, default=str) + "\n"
+            filepath = target / f".claude-primer-{agent}.json"
+        elif fmt == "yaml":
+            content = _format_as_yaml(ctx) + "\n"
+            filepath = target / f".claude-primer-{agent}.yaml"
+        else:
+            continue
+
+        exists = filepath.exists()
+        if not dry_run:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(content, encoding="utf-8")
+
+        action_type = "overwrite" if exists else "create"
+        actions.append(FileAction(str(filepath.relative_to(target)), action_type, lines=content.count("\n")))
+
+    return actions
+
+
+# ─────────────────────────────────────────────
+# Watch mode
+# ─────────────────────────────────────────────
+
+# Config files to watch for changes
+_WATCH_FILES = [
+    "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "mix.exs",
+    "pubspec.yaml", "composer.json", "build.gradle", "pom.xml", "build.sbt",
+    "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "README.md", "CLAUDE.md", "STANDARDS.md", ".env", ".env.example",
+    "requirements.txt", "Pipfile", "setup.py", "setup.cfg",
+]
+
+
+def _get_watch_targets(root: Path) -> dict:
+    """Return {filepath: mtime} for all watchable files."""
+    mtimes = {}
+    for f in _WATCH_FILES:
+        fp = root / f
+        try:
+            if fp.exists():
+                mtimes[f] = fp.stat().st_mtime
+        except OSError:
+            pass
+    # Also check .github/workflows/
+    wf_dir = root / ".github" / "workflows"
+    if wf_dir.is_dir():
+        try:
+            for item in wf_dir.iterdir():
+                if item.is_file() and item.suffix in (".yml", ".yaml"):
+                    rel = f".github/workflows/{item.name}"
+                    mtimes[rel] = item.stat().st_mtime
+        except OSError:
+            pass
+    return mtimes
+
+
+def _diff_scan_results(old: dict, new: dict) -> list:
+    """Compare two scan results and return human-readable diff lines."""
+    diffs = []
+    old_stacks = set(old.get("stacks", []))
+    new_stacks = set(new.get("stacks", []))
+    for s in new_stacks - old_stacks:
+        diffs.append(f"Stack added: {s}")
+    for s in old_stacks - new_stacks:
+        diffs.append(f"Stack removed: {s}")
+    old_fws = set(old.get("frameworks", []))
+    new_fws = set(new.get("frameworks", []))
+    for f in new_fws - old_fws:
+        diffs.append(f"Framework added: {f}")
+    for f in old_fws - new_fws:
+        diffs.append(f"Framework removed: {f}")
+    old_subs = set(old.get("sub_projects", []))
+    new_subs = set(new.get("sub_projects", []))
+    for s in new_subs - old_subs:
+        diffs.append(f"Sub-project added: {s}")
+    old_fc = old.get("file_count", 0)
+    new_fc = new.get("file_count", 0)
+    if abs(new_fc - old_fc) > 5:
+        diffs.append(f"File count: {old_fc} -> {new_fc}")
+    return diffs
+
+
+def run_watch(target: Path, interval: int = 5, auto: bool = False, **run_kwargs):
+    """Poll-based watch mode. Re-scans on config file changes."""
+    import time as _time
+
+    target = target.resolve()
+    print(f"\n  Watching {target} (interval: {interval}s, auto-update: {auto})")
+    print(f"  Press Ctrl+C to stop.\n")
+
+    mtimes = _get_watch_targets(target)
+    last_scan = scan_directory(target)
+
+    try:
+        while True:
+            _time.sleep(interval)
+            new_mtimes = _get_watch_targets(target)
+            changed = {k for k in new_mtimes if new_mtimes.get(k) != mtimes.get(k)}
+            new_files = set(new_mtimes) - set(mtimes)
+            removed_files = set(mtimes) - set(new_mtimes)
+
+            if changed or new_files or removed_files:
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                print(f"  [{ts}] Changes detected:")
+                for f in sorted(changed):
+                    print(f"    Modified: {f}")
+                for f in sorted(new_files):
+                    print(f"    Added: {f}")
+                for f in sorted(removed_files):
+                    print(f"    Removed: {f}")
+
+                new_scan = scan_directory(target)
+                diffs = _diff_scan_results(last_scan, new_scan)
+                if diffs:
+                    print(f"  Impact:")
+                    for d in diffs:
+                        print(f"    {d}")
+
+                if auto:
+                    print(f"  Auto-regenerating...")
+                    run(target, **run_kwargs)
+                else:
+                    print(f"  Run 'claude-primer --force' to regenerate.\n")
+
+                mtimes = new_mtimes
+                last_scan = new_scan
+    except KeyboardInterrupt:
+        print(f"\n  Watch stopped.")
+
+
 def plan_json(target: Path, with_readme: bool = False) -> dict:
     """Compute full project analysis without writing files. Returns JSON-serializable dict."""
     target = target.resolve()
@@ -2867,6 +3449,15 @@ def plan_json(target: Path, with_readme: bool = False) -> dict:
     ec = info.get("existing_content", {})
     sources = list(ec.get("sources", set()))
 
+    # Serialize confidence scores
+    raw_scores = info.get("confidence_scores", {})
+    confidence_scores = {}
+    for k, v in raw_scores.items():
+        if isinstance(v, list):
+            confidence_scores[k] = [sv.as_dict() for sv in v if isinstance(sv, ScoredValue)]
+        elif isinstance(v, ScoredValue):
+            confidence_scores[k] = v.as_dict()
+
     return {
         "target": str(target),
         "name": info["name"],
@@ -2884,6 +3475,7 @@ def plan_json(target: Path, with_readme: bool = False) -> dict:
         "sub_project_details": info.get("sub_project_details", []),
         "extracted_from": sources,
         "write_plan": write_plan,
+        "confidence_scores": confidence_scores,
         "git": {
             "is_git": git_info.get("is_git", False),
             "dirty": git_info.get("dirty", False),
@@ -2939,12 +3531,54 @@ Examples:
                         help="Bootstrap from an existing document (PRD, spec, RFC, etc.)")
     parser.add_argument("--clean-root", action="store_true",
                         help="Move auxiliary docs to .claude/docs/, keep only CLAUDE.md and README.md at root")
+    parser.add_argument("--template-dir", type=str, default=None,
+                        help="Directory containing template overrides (default: .claude-primer/templates/)")
+    parser.add_argument("--watch", action="store_true",
+                        help="Watch for changes and suggest updates (poll-based)")
+    parser.add_argument("--watch-interval", type=int, default=5,
+                        help="Polling interval in seconds for watch mode (default: 5)")
+    parser.add_argument("--watch-auto", action="store_true",
+                        help="Auto-regenerate files when changes detected in watch mode")
+    parser.add_argument("--agent", type=str, default=None,
+                        help="Target agent(s): claude, cursor, copilot, windsurf, aider, codex, all (comma-separated)")
+    parser.add_argument("--format", type=str, default="markdown", choices=["markdown", "yaml", "json"],
+                        help="Output format for agent context files (default: markdown)")
 
     args = parser.parse_args()
 
     if args.plan_json:
         result = plan_json(Path(args.target), with_readme=args.with_readme)
         print(json.dumps(result, indent=2))
+        return
+
+    # Parse agent list
+    agents = None
+    if args.agent:
+        if args.agent == "all":
+            agents = list(AGENT_CONVENTIONS.keys())
+        else:
+            agents = [a.strip() for a in args.agent.split(",")]
+            for a in agents:
+                if a not in AGENT_CONVENTIONS:
+                    parser.error(f"Unknown agent: {a}. Valid: {', '.join(AGENT_CONVENTIONS.keys())}, all")
+
+    # Watch mode
+    if args.watch:
+        run_watch(
+            Path(args.target),
+            interval=args.watch_interval,
+            auto=args.watch_auto,
+            dry_run=args.dry_run,
+            force=True,
+            no_git_check=True,
+            with_readme=args.with_readme,
+            with_ralph=args.with_ralph,
+            git_mode="skip",
+            interactive=False,
+            force_all=args.force_all,
+            clean_root=args.clean_root,
+            template_dir=args.template_dir,
+        )
         return
 
     interactive = not args.yes
@@ -2970,6 +3604,9 @@ Examples:
         force_all=args.force_all,
         from_doc=args.from_doc,
         clean_root=args.clean_root,
+        template_dir=args.template_dir,
+        agents=agents,
+        output_format=args.format,
     )
 
 
