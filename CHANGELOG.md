@@ -2,6 +2,19 @@
 
 All notable changes to claude-primer are documented here.
 
+## [1.7.0] — 2026-03-08
+
+### Added
+- **`--migrate`** — convert `.claude-setup.rc` (INI) to `.claude-primer.toml` (TOML); preserves project metadata (stacks, frameworks, deploy) in `[project]` section
+- **`--init`** — interactively create `.claude-primer.toml` config file; `--yes` mode writes sensible defaults
+- **`--update`** — self-update compiled binaries from GitHub releases with SHA256 verification; falls back to package manager advice for source installs
+- **VS Code extension** — 5 commands (Generate, Dry Run, Show Diff, Init Config, Plan JSON); auto-resolves binary via PATH/npx/pipx
+- **CI linting** — ruff (Python) and eslint (npm) checks on push/PR; pytest-cov with coverage artifact upload
+- **Documentation** — new Commands and VS Code Extension guide pages
+
+### Changed
+- Author names updated to full legal names across all manifests and licenses
+
 ## [1.6.0] — 2026-03-08
 
 ### Added

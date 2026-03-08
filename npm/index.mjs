@@ -29,7 +29,7 @@ import { execSync } from "child_process";
 import readline from "readline";
 import os from "os";
 
-const __version__ = "1.6.0";
+const __version__ = "1.7.0";
 
 // ─────────────────────────────────────────────
 // Constants
