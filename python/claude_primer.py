@@ -3676,6 +3676,290 @@ def _apply_toml_config(args, config: dict):
     # No action needed here; the RC system handles project metadata
 
 
+def _run_migrate(target: Path) -> None:
+    """Convert .claude-setup.rc (INI) to .claude-primer.toml (TOML)."""
+    rc_file = target.resolve() / RC_FILENAME
+    toml_file = target.resolve() / TOML_CONFIG_FILE
+
+    if not rc_file.exists():
+        print(f"  No {RC_FILENAME} found in {target.resolve()}")
+        return
+
+    rc = load_rc(target)
+    if not rc:
+        print(f"  {RC_FILENAME} is empty or unreadable.")
+        return
+
+    lines = [
+        "# Migrated from .claude-setup.rc by claude-primer --migrate",
+        f"# Generated on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "[project]",
+    ]
+    if rc.get("description"):
+        lines.append(f'description = "{rc["description"]}"')
+    for key in ("stacks", "frameworks", "deploy"):
+        vals = rc.get(key, [])
+        if vals:
+            items = ", ".join(f'"{v}"' for v in vals)
+            lines.append(f"{key} = [{items}]")
+    if "is_monorepo" in rc:
+        lines.append(f"is_monorepo = {'true' if rc['is_monorepo'] else 'false'}")
+    if rc.get("monorepo_tool"):
+        lines.append(f'monorepo_tool = "{rc["monorepo_tool"]}"')
+    if "with_ralph" in rc:
+        lines.append(f"with_ralph = {'true' if rc['with_ralph'] else 'false'}")
+    if "clean_root" in rc:
+        lines.append(f"clean_root = {'true' if rc['clean_root'] else 'false'}")
+
+    lines.extend([
+        "",
+        "[flags]",
+        "# Add CLI defaults here, e.g.:",
+        "# force = true",
+        "# with_readme = true",
+        "# git_mode = \"stash\"",
+        "",
+    ])
+
+    try:
+        with open(str(toml_file), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"  Migrated {RC_FILENAME} -> {TOML_CONFIG_FILE}")
+        print(f"  Written to: {toml_file}")
+    except OSError as e:
+        print(f"  Error writing {TOML_CONFIG_FILE}: {e}")
+
+
+def _run_init(target: Path, interactive: bool = True) -> None:
+    """Interactively create .claude-primer.toml config file."""
+    toml_file = target.resolve() / TOML_CONFIG_FILE
+
+    if toml_file.exists():
+        if interactive:
+            ans = input(f"  {TOML_CONFIG_FILE} already exists. Overwrite? [y/N] ").strip().lower()
+            if ans != "y":
+                print("  Aborted.")
+                return
+        else:
+            print(f"  Overwriting existing {TOML_CONFIG_FILE} (--yes mode)")
+
+    flags = {
+        "force": False,
+        "with_readme": False,
+        "clean_root": False,
+        "git_mode": "ask",
+        "agent": "none",
+    }
+
+    if interactive:
+        ans = input("  Force mode? [y/N] ").strip().lower()
+        flags["force"] = ans == "y"
+
+        ans = input("  Include README? [y/N] ").strip().lower()
+        flags["with_readme"] = ans == "y"
+
+        ans = input("  Clean root? [y/N] ").strip().lower()
+        flags["clean_root"] = ans == "y"
+
+        ans = input("  Git mode? [ask/stash/skip] (ask) ").strip().lower()
+        if ans in ("ask", "stash", "skip"):
+            flags["git_mode"] = ans
+
+        ans = input("  Target agents? [none/all/cursor,copilot,...] (none) ").strip().lower()
+        if ans:
+            flags["agent"] = ans
+    # else: use sensible defaults (all False / "ask" / "none")
+
+    lines = [
+        "# claude-primer configuration",
+        f"# Created by claude-primer --init on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "[project]",
+        "# Project metadata (populated by wizard or --migrate)",
+        "",
+        "[flags]",
+        f"force = {'true' if flags['force'] else 'false'}",
+        f"with_readme = {'true' if flags['with_readme'] else 'false'}",
+        f"clean_root = {'true' if flags['clean_root'] else 'false'}",
+        f'git_mode = "{flags["git_mode"]}"',
+    ]
+
+    if flags["agent"] and flags["agent"] != "none":
+        lines.append(f'agent = "{flags["agent"]}"')
+
+    lines.append("")
+
+    try:
+        with open(str(toml_file), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"  Created {TOML_CONFIG_FILE} at {toml_file}")
+    except OSError as e:
+        print(f"  Error writing {TOML_CONFIG_FILE}: {e}")
+
+
+def _run_update() -> None:
+    """Self-update the claude-primer binary from GitHub releases."""
+    import urllib.request
+    import hashlib
+    import platform
+
+    GITHUB_REPO = "limaronaldo/claude-primer"
+    API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+    # Check if running from source (not a frozen/compiled binary)
+    is_frozen = getattr(sys, "frozen", False)
+    if not is_frozen:
+        print("  Running from source (not a compiled binary).")
+        print("  To update, use:  pip install --upgrade claude-primer")
+        return
+
+    print("  Checking for updates...")
+
+    try:
+        req = urllib.request.Request(API_URL, headers={"Accept": "application/vnd.github.v3+json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            release = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"  Error fetching latest release: {e}")
+        return
+
+    latest_tag = release.get("tag_name", "").lstrip("v")
+    current = __version__
+
+    if not latest_tag:
+        print("  Could not determine latest version.")
+        return
+
+    if latest_tag == current:
+        print(f"  Already up to date (v{current}).")
+        return
+
+    # Simple version comparison
+    try:
+        latest_parts = [int(x) for x in latest_tag.split(".")]
+        current_parts = [int(x) for x in current.split(".")]
+        if latest_parts <= current_parts:
+            print(f"  Already up to date (v{current} >= v{latest_tag}).")
+            return
+    except ValueError:
+        pass  # Fall through and attempt the update anyway
+
+    print(f"  New version available: v{current} -> v{latest_tag}")
+
+    # Determine platform suffix for binary name
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if "arm" in machine or "aarch64" in machine:
+        arch = "arm64"
+    else:
+        arch = "x86_64"
+
+    if system == "darwin":
+        binary_name = f"claude-primer-macos-{arch}"
+    elif system == "linux":
+        binary_name = f"claude-primer-linux-{arch}"
+    elif system == "windows":
+        binary_name = f"claude-primer-windows-{arch}.exe"
+    else:
+        print(f"  Unsupported platform: {system} {machine}")
+        return
+
+    # Find the binary asset and checksum
+    assets = release.get("assets", [])
+    binary_asset = None
+    checksum_asset = None
+    for asset in assets:
+        name = asset.get("name", "")
+        if name == binary_name:
+            binary_asset = asset
+        elif name == f"{binary_name}.sha256" or name == "checksums-sha256.txt":
+            checksum_asset = asset
+
+    if not binary_asset:
+        print(f"  Binary not found for platform: {binary_name}")
+        print(f"  Available assets: {[a['name'] for a in assets]}")
+        return
+
+    download_url = binary_asset["browser_download_url"]
+    print(f"  Downloading {binary_name}...")
+
+    try:
+        req = urllib.request.Request(download_url)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            binary_data = resp.read()
+    except Exception as e:
+        print(f"  Error downloading binary: {e}")
+        return
+
+    # Verify checksum if available
+    if checksum_asset:
+        try:
+            checksum_url = checksum_asset["browser_download_url"]
+            req = urllib.request.Request(checksum_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                checksum_content = resp.read().decode("utf-8")
+
+            expected_hash = None
+            for line in checksum_content.strip().splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[1].strip("*") == binary_name:
+                    expected_hash = parts[0]
+                    break
+                elif len(parts) == 1:
+                    # Single hash file (binary_name.sha256)
+                    expected_hash = parts[0]
+                    break
+
+            if expected_hash:
+                actual_hash = hashlib.sha256(binary_data).hexdigest()
+                if actual_hash != expected_hash:
+                    print(f"  Checksum mismatch!")
+                    print(f"    Expected: {expected_hash}")
+                    print(f"    Got:      {actual_hash}")
+                    return
+                print("  Checksum verified.")
+            else:
+                print("  Warning: could not parse checksum file, skipping verification.")
+        except Exception as e:
+            print(f"  Warning: could not verify checksum: {e}")
+
+    # Replace the current binary
+    current_binary = Path(sys.executable).resolve()
+    backup = current_binary.with_suffix(".bak")
+
+    try:
+        # Backup existing
+        if backup.exists():
+            backup.unlink()
+        current_binary.rename(backup)
+
+        # Write new binary
+        with open(str(current_binary), "wb") as f:
+            f.write(binary_data)
+
+        # Make executable on Unix
+        if sys.platform != "win32":
+            current_binary.chmod(0o755)
+
+        # Remove backup
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+
+        print(f"  Updated to v{latest_tag} successfully!")
+    except Exception as e:
+        # Attempt to restore backup
+        print(f"  Error replacing binary: {e}")
+        if backup.exists() and not current_binary.exists():
+            try:
+                backup.rename(current_binary)
+                print("  Restored previous version from backup.")
+            except OSError:
+                print(f"  CRITICAL: backup at {backup}, please restore manually.")
+
+
 def main():
     # Ensure UTF-8 output on Windows (cp1252 can't encode box-drawing chars)
     import sys
@@ -3742,10 +4026,29 @@ Examples:
                         help="Show what would change without writing (unified diff)")
     parser.add_argument("--telemetry-off", action="store_true",
                         help="Disable telemetry even if CLAUDE_PRIMER_TELEMETRY=1 is set")
+    parser.add_argument("--migrate", action="store_true",
+                        help="Convert .claude-setup.rc to .claude-primer.toml")
+    parser.add_argument("--init", action="store_true",
+                        help="Interactively create .claude-primer.toml config file")
+    parser.add_argument("--update", action="store_true",
+                        help="Self-update to the latest release from GitHub")
 
     args = parser.parse_args()
 
     _t0 = _time.monotonic()
+
+    # ── Dispatch standalone commands ──
+    if args.migrate:
+        _run_migrate(Path(args.target))
+        return
+
+    if args.init:
+        _run_init(Path(args.target), interactive=not args.yes)
+        return
+
+    if args.update:
+        _run_update()
+        return
 
     # ── Load .claude-primer.toml config ──
     toml_config = _load_toml_config(Path(args.target))

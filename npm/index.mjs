@@ -3338,6 +3338,9 @@ function parseArgs(argv) {
     agent: null,
     format: "markdown",
     diff: false,
+    migrate: false,
+    init: false,
+    update: false,
   };
 
   const positional = [];
@@ -3391,6 +3394,9 @@ function parseArgs(argv) {
         break;
       case "--diff": args.diff = true; break;
       case "--telemetry-off": args.telemetryOff = true; break;
+      case "--migrate": args.migrate = true; break;
+      case "--init": args.init = true; break;
+      case "--update": args.update = true; break;
       case "--help": case "-h":
         console.log(`claude-primer — Claude Code Knowledge Architecture Bootstrap
 
@@ -3484,6 +3490,88 @@ function sendTelemetryIfEnabled(args, info, durationMs) {
       signal: AbortSignal.timeout(5000),
     }).catch(() => {}); // best-effort
   } catch { /* ignore */ }
+}
+
+// ─────────────────────────────────────────────
+// Migrate (.claude-setup.rc -> .claude-primer.toml)
+// ─────────────────────────────────────────────
+
+function _runMigrate(target) {
+  const resolved = path.resolve(target);
+  const rcPath = path.join(resolved, RC_FILENAME);
+  const tomlPath = path.join(resolved, ".claude-primer.toml");
+
+  if (!existsSync(rcPath)) {
+    console.log(`  No ${RC_FILENAME} found in ${resolved}`);
+    return;
+  }
+
+  const rc = loadRc(resolved);
+  if (!rc || !Object.keys(rc).length) {
+    console.log(`  ${RC_FILENAME} is empty or unreadable.`);
+    return;
+  }
+
+  const lines = [
+    "# Migrated from .claude-setup.rc by claude-primer --migrate",
+    `# Generated on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
+    "",
+    "[project]",
+  ];
+  if (rc.description) lines.push(`description = "${rc.description}"`);
+  for (const key of ["stacks", "frameworks", "deploy"]) {
+    const vals = rc[key];
+    if (Array.isArray(vals) && vals.length) {
+      lines.push(`${key} = [${vals.map(v => `"${v}"`).join(", ")}]`);
+    }
+  }
+  if ("is_monorepo" in rc) lines.push(`is_monorepo = ${rc.is_monorepo ? "true" : "false"}`);
+  if (rc.monorepo_tool) lines.push(`monorepo_tool = "${rc.monorepo_tool}"`);
+
+  lines.push("", "[flags]", "# Add CLI defaults here, e.g.:", '# force = true', '# with_readme = true', "");
+
+  try {
+    fs.writeFileSync(tomlPath, lines.join("\n"), "utf-8");
+    console.log(`  Migrated ${RC_FILENAME} -> .claude-primer.toml`);
+    console.log(`  Written to: ${tomlPath}`);
+  } catch (e) {
+    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Init (.claude-primer.toml)
+// ─────────────────────────────────────────────
+
+function _runInit(target, interactive) {
+  const resolved = path.resolve(target);
+  const tomlPath = path.join(resolved, ".claude-primer.toml");
+
+  if (existsSync(tomlPath) && !interactive) {
+    console.log("  Overwriting existing .claude-primer.toml (--yes mode)");
+  }
+
+  const lines = [
+    "# claude-primer configuration",
+    `# Created by claude-primer --init on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
+    "",
+    "[project]",
+    "# Project metadata (populated by wizard or --migrate)",
+    "",
+    "[flags]",
+    "force = false",
+    "with_readme = false",
+    "clean_root = false",
+    'git_mode = "ask"',
+    "",
+  ];
+
+  try {
+    fs.writeFileSync(tomlPath, lines.join("\n"), "utf-8");
+    console.log(`  Created .claude-primer.toml at ${tomlPath}`);
+  } catch (e) {
+    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -3632,6 +3720,21 @@ async function main() {
     const result = planJson(args.target, args.withReadme);
     console.log(JSON.stringify(result, null, 2));
     sendTelemetryIfEnabled(args, result, Date.now() - _t0);
+    return;
+  }
+
+  // Standalone commands
+  if (args.migrate) {
+    _runMigrate(args.target);
+    return;
+  }
+  if (args.init) {
+    _runInit(args.target, !args.yes);
+    return;
+  }
+  if (args.update) {
+    console.log("  Self-update is only available for compiled binaries.");
+    console.log("  To update the npm package, run:  npm install -g claude-primer@latest");
     return;
   }
 
