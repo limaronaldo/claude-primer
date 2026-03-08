@@ -177,8 +177,8 @@ claude-primer/
 
 ## Authors
 
-- Ronaldo Lima
-- Breno Lima
+- Ronaldo Martins de Lima Filho
+- Breno Delgado Lima
 
 ## License
 
