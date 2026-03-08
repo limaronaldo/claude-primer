@@ -3423,7 +3423,10 @@ Usage:
   claude-primer --format markdown|yaml|json # output format for agent files
   claude-primer --plugin-dir <dir>         # plugin generators directory
   claude-primer --diff                      # show what would change (unified diff)
-  claude-primer --telemetry-off            # disable telemetry`);
+  claude-primer --telemetry-off            # disable telemetry
+  claude-primer --migrate                   # convert .claude-setup.rc to .claude-primer.toml
+  claude-primer --init                      # interactively create .claude-primer.toml
+  claude-primer --update                    # self-update to latest release`);
         process.exit(0);
         break;
       default:
@@ -3490,88 +3493,6 @@ function sendTelemetryIfEnabled(args, info, durationMs) {
       signal: AbortSignal.timeout(5000),
     }).catch(() => {}); // best-effort
   } catch { /* ignore */ }
-}
-
-// ─────────────────────────────────────────────
-// Migrate (.claude-setup.rc -> .claude-primer.toml)
-// ─────────────────────────────────────────────
-
-function _runMigrate(target) {
-  const resolved = path.resolve(target);
-  const rcPath = path.join(resolved, RC_FILENAME);
-  const tomlPath = path.join(resolved, ".claude-primer.toml");
-
-  if (!existsSync(rcPath)) {
-    console.log(`  No ${RC_FILENAME} found in ${resolved}`);
-    return;
-  }
-
-  const rc = loadRc(resolved);
-  if (!rc || !Object.keys(rc).length) {
-    console.log(`  ${RC_FILENAME} is empty or unreadable.`);
-    return;
-  }
-
-  const lines = [
-    "# Migrated from .claude-setup.rc by claude-primer --migrate",
-    `# Generated on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
-    "",
-    "[project]",
-  ];
-  if (rc.description) lines.push(`description = "${rc.description}"`);
-  for (const key of ["stacks", "frameworks", "deploy"]) {
-    const vals = rc[key];
-    if (Array.isArray(vals) && vals.length) {
-      lines.push(`${key} = [${vals.map(v => `"${v}"`).join(", ")}]`);
-    }
-  }
-  if ("is_monorepo" in rc) lines.push(`is_monorepo = ${rc.is_monorepo ? "true" : "false"}`);
-  if (rc.monorepo_tool) lines.push(`monorepo_tool = "${rc.monorepo_tool}"`);
-
-  lines.push("", "[flags]", "# Add CLI defaults here, e.g.:", '# force = true', '# with_readme = true', "");
-
-  try {
-    fs.writeFileSync(tomlPath, lines.join("\n"), "utf-8");
-    console.log(`  Migrated ${RC_FILENAME} -> .claude-primer.toml`);
-    console.log(`  Written to: ${tomlPath}`);
-  } catch (e) {
-    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
-  }
-}
-
-// ─────────────────────────────────────────────
-// Init (.claude-primer.toml)
-// ─────────────────────────────────────────────
-
-function _runInit(target, interactive) {
-  const resolved = path.resolve(target);
-  const tomlPath = path.join(resolved, ".claude-primer.toml");
-
-  if (existsSync(tomlPath) && !interactive) {
-    console.log("  Overwriting existing .claude-primer.toml (--yes mode)");
-  }
-
-  const lines = [
-    "# claude-primer configuration",
-    `# Created by claude-primer --init on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
-    "",
-    "[project]",
-    "# Project metadata (populated by wizard or --migrate)",
-    "",
-    "[flags]",
-    "force = false",
-    "with_readme = false",
-    "clean_root = false",
-    'git_mode = "ask"',
-    "",
-  ];
-
-  try {
-    fs.writeFileSync(tomlPath, lines.join("\n"), "utf-8");
-    console.log(`  Created .claude-primer.toml at ${tomlPath}`);
-  } catch (e) {
-    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
-  }
 }
 
 // ─────────────────────────────────────────────
@@ -3659,6 +3580,297 @@ function _runDiff(args) {
 }
 
 // ─────────────────────────────────────────────
+// Migrate, Init, Update
+// ─────────────────────────────────────────────
+
+function _runMigrate(target) {
+  const rcFile = path.join(path.resolve(target), RC_FILENAME);
+  const tomlFile = path.join(path.resolve(target), ".claude-primer.toml");
+
+  if (!existsSync(rcFile)) {
+    console.log(`  No ${RC_FILENAME} found in ${path.resolve(target)}`);
+    return;
+  }
+
+  const rc = loadRc(target);
+  if (!rc || !Object.keys(rc).length) {
+    console.log(`  ${RC_FILENAME} is empty or unreadable.`);
+    return;
+  }
+
+  const lines = [
+    "# Migrated from .claude-setup.rc by claude-primer --migrate",
+    `# Generated on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
+    "",
+    "[project]",
+  ];
+  if (rc.description) lines.push(`description = "${rc.description}"`);
+  for (const key of ["stacks", "frameworks", "deploy"]) {
+    const vals = rc[key] || [];
+    if (vals.length) {
+      const items = vals.map((v) => `"${v}"`).join(", ");
+      lines.push(`${key} = [${items}]`);
+    }
+  }
+  if ("is_monorepo" in rc) lines.push(`is_monorepo = ${rc.is_monorepo ? "true" : "false"}`);
+  if (rc.monorepo_tool) lines.push(`monorepo_tool = "${rc.monorepo_tool}"`);
+  if ("with_ralph" in rc) lines.push(`with_ralph = ${rc.with_ralph ? "true" : "false"}`);
+  if ("clean_root" in rc) lines.push(`clean_root = ${rc.clean_root ? "true" : "false"}`);
+
+  lines.push("");
+  lines.push("[flags]");
+  lines.push("# Add CLI defaults here, e.g.:");
+  lines.push('# force = true');
+  lines.push('# with_readme = true');
+  lines.push('# git_mode = "stash"');
+  lines.push("");
+
+  try {
+    fs.writeFileSync(tomlFile, lines.join("\n"), "utf-8");
+    console.log(`  Migrated ${RC_FILENAME} -> .claude-primer.toml`);
+    console.log(`  Written to: ${tomlFile}`);
+  } catch (e) {
+    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
+  }
+}
+
+async function _runInit(target, interactive = true) {
+  const tomlFile = path.join(path.resolve(target), ".claude-primer.toml");
+
+  if (existsSync(tomlFile)) {
+    if (interactive) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const ans = await new Promise((resolve) =>
+        rl.question("  .claude-primer.toml already exists. Overwrite? [y/N] ", resolve)
+      );
+      rl.close();
+      if (ans.trim().toLowerCase() !== "y") {
+        console.log("  Aborted.");
+        return;
+      }
+    } else {
+      console.log("  Overwriting existing .claude-primer.toml (--yes mode)");
+    }
+  }
+
+  const flags = {
+    force: false,
+    with_readme: false,
+    clean_root: false,
+    git_mode: "ask",
+    agent: "none",
+  };
+
+  if (interactive) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+
+    let ans = await ask("  Force mode? [y/N] ");
+    flags.force = ans.trim().toLowerCase() === "y";
+
+    ans = await ask("  Include README? [y/N] ");
+    flags.with_readme = ans.trim().toLowerCase() === "y";
+
+    ans = await ask("  Clean root? [y/N] ");
+    flags.clean_root = ans.trim().toLowerCase() === "y";
+
+    ans = await ask("  Git mode? [ask/stash/skip] (ask) ");
+    if (["ask", "stash", "skip"].includes(ans.trim().toLowerCase())) {
+      flags.git_mode = ans.trim().toLowerCase();
+    }
+
+    ans = await ask("  Target agents? [none/all/cursor,copilot,...] (none) ");
+    if (ans.trim()) flags.agent = ans.trim().toLowerCase();
+
+    rl.close();
+  }
+
+  const lines = [
+    "# claude-primer configuration",
+    `# Created by claude-primer --init on ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
+    "",
+    "[project]",
+    "# Project metadata (populated by wizard or --migrate)",
+    "",
+    "[flags]",
+    `force = ${flags.force}`,
+    `with_readme = ${flags.with_readme}`,
+    `clean_root = ${flags.clean_root}`,
+    `git_mode = "${flags.git_mode}"`,
+  ];
+
+  if (flags.agent && flags.agent !== "none") {
+    lines.push(`agent = "${flags.agent}"`);
+  }
+
+  lines.push("");
+
+  try {
+    fs.writeFileSync(tomlFile, lines.join("\n"), "utf-8");
+    console.log(`  Created .claude-primer.toml at ${tomlFile}`);
+  } catch (e) {
+    console.log(`  Error writing .claude-primer.toml: ${e.message}`);
+  }
+}
+
+async function _runUpdate() {
+  const GITHUB_REPO = "anthropics/claude-primer";
+  const API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+
+  // Check if running from a packaged binary (pkg or similar)
+  const isBinary = !!(process.pkg || process.execPath.includes("claude-primer"));
+  if (!isBinary) {
+    console.log("  Running from source (not a compiled binary).");
+    console.log("  To update, use:  npm install -g claude-primer");
+    return;
+  }
+
+  console.log("  Checking for updates...");
+
+  let release;
+  try {
+    const resp = await fetch(API_URL, {
+      headers: { Accept: "application/vnd.github.v3+json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    release = await resp.json();
+  } catch (e) {
+    console.log(`  Error fetching latest release: ${e.message}`);
+    return;
+  }
+
+  const latestTag = (release.tag_name || "").replace(/^v/, "");
+  const current = __version__;
+
+  if (!latestTag) {
+    console.log("  Could not determine latest version.");
+    return;
+  }
+
+  if (latestTag === current) {
+    console.log(`  Already up to date (v${current}).`);
+    return;
+  }
+
+  // Simple semver comparison
+  try {
+    const latestParts = latestTag.split(".").map(Number);
+    const currentParts = current.split(".").map(Number);
+    let isNewer = false;
+    for (let j = 0; j < 3; j++) {
+      if ((latestParts[j] || 0) > (currentParts[j] || 0)) { isNewer = true; break; }
+      if ((latestParts[j] || 0) < (currentParts[j] || 0)) break;
+    }
+    if (!isNewer) {
+      console.log(`  Already up to date (v${current} >= v${latestTag}).`);
+      return;
+    }
+  } catch { /* proceed anyway */ }
+
+  console.log(`  New version available: v${current} -> v${latestTag}`);
+
+  // Determine platform/arch
+  const system = process.platform;
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  let binaryName;
+  if (system === "darwin") binaryName = `claude-primer-macos-${arch}`;
+  else if (system === "linux") binaryName = `claude-primer-linux-${arch}`;
+  else if (system === "win32") binaryName = `claude-primer-win-${arch}.exe`;
+  else {
+    console.log(`  Unsupported platform: ${system} ${process.arch}`);
+    return;
+  }
+
+  const assets = release.assets || [];
+  const binaryAsset = assets.find((a) => a.name === binaryName);
+  const checksumAsset = assets.find((a) => a.name === `${binaryName}.sha256` || a.name === "checksums.txt");
+
+  if (!binaryAsset) {
+    console.log(`  Binary not found for platform: ${binaryName}`);
+    console.log(`  Available assets: ${assets.map((a) => a.name).join(", ")}`);
+    return;
+  }
+
+  console.log(`  Downloading ${binaryName}...`);
+
+  let binaryData;
+  try {
+    const resp = await fetch(binaryAsset.browser_download_url, {
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    binaryData = Buffer.from(await resp.arrayBuffer());
+  } catch (e) {
+    console.log(`  Error downloading binary: ${e.message}`);
+    return;
+  }
+
+  // Verify checksum if available
+  if (checksumAsset) {
+    try {
+      const { createHash } = await import("crypto");
+      const csResp = await fetch(checksumAsset.browser_download_url, {
+        signal: AbortSignal.timeout(15000),
+      });
+      const csContent = await csResp.text();
+
+      let expectedHash = null;
+      for (const line of csContent.trim().split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 2 && parts[1].replace("*", "") === binaryName) {
+          expectedHash = parts[0];
+          break;
+        } else if (parts.length === 1) {
+          expectedHash = parts[0];
+          break;
+        }
+      }
+
+      if (expectedHash) {
+        const actualHash = createHash("sha256").update(binaryData).digest("hex");
+        if (actualHash !== expectedHash) {
+          console.log("  Checksum mismatch!");
+          console.log(`    Expected: ${expectedHash}`);
+          console.log(`    Got:      ${actualHash}`);
+          return;
+        }
+        console.log("  Checksum verified.");
+      } else {
+        console.log("  Warning: could not parse checksum file, skipping verification.");
+      }
+    } catch (e) {
+      console.log(`  Warning: could not verify checksum: ${e.message}`);
+    }
+  }
+
+  // Replace the current binary
+  const currentBinary = process.execPath;
+  const backupPath = currentBinary + ".bak";
+
+  try {
+    if (existsSync(backupPath)) fs.unlinkSync(backupPath);
+    fs.renameSync(currentBinary, backupPath);
+    fs.writeFileSync(currentBinary, binaryData);
+    if (process.platform !== "win32") {
+      fs.chmodSync(currentBinary, 0o755);
+    }
+    try { fs.unlinkSync(backupPath); } catch { /* ignore */ }
+    console.log(`  Updated to v${latestTag} successfully!`);
+  } catch (e) {
+    console.log(`  Error replacing binary: ${e.message}`);
+    if (existsSync(backupPath) && !existsSync(currentBinary)) {
+      try {
+        fs.renameSync(backupPath, currentBinary);
+        console.log("  Restored previous version from backup.");
+      } catch {
+        console.log(`  CRITICAL: backup at ${backupPath}, please restore manually.`);
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
 // TOML config file support
 // ─────────────────────────────────────────────
 
@@ -3729,12 +3941,11 @@ async function main() {
     return;
   }
   if (args.init) {
-    _runInit(args.target, !args.yes);
+    await _runInit(args.target, !args.yes);
     return;
   }
   if (args.update) {
-    console.log("  Self-update is only available for compiled binaries.");
-    console.log("  To update the npm package, run:  npm install -g claude-primer@latest");
+    await _runUpdate();
     return;
   }
 

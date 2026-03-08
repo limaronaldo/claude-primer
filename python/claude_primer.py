@@ -3986,6 +3986,9 @@ Examples:
   claude-primer --git-mode stash      # auto-stash, no prompt
   claude-primer --git-mode skip --yes # full automation
   claude-primer --plan-json           # output project analysis as JSON
+  claude-primer --migrate             # convert .claude-setup.rc to .claude-primer.toml
+  claude-primer --init                # interactively create .claude-primer.toml
+  claude-primer --update              # self-update to latest release
         """,
     )
     parser.add_argument("target", nargs="?", default=".", help="Target directory (default: current)")
