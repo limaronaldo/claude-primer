@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Getting Started — Claude Primer</title>
+        <title>Commands — Claude Primer</title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
@@ -61,109 +61,60 @@
             </nav>
             <main class="main-content">
                 <section class="features-section" style="margin-top: 2rem">
-                    <h1>Getting Started</h1>
+                    <h1>Commands</h1>
 
-                    <h2>Installation</h2>
+                    <h2>--migrate</h2>
                     <p>
-                        Choose the method that works best for your environment:
+                        Convert <code>.claude-setup.rc</code> (INI format) to
+                        <code>.claude-primer.toml</code> (TOML format).
+                    </p>
+                    <pre><code>claude-primer --migrate
+claude-primer /path/to/project --migrate</code></pre>
+                    <p>
+                        Reads the existing <code>.claude-setup.rc</code>,
+                        extracts project metadata (description, stacks,
+                        frameworks, deploy targets, monorepo settings), and
+                        writes a <code>.claude-primer.toml</code> with a
+                        <code>[project]</code> section and a
+                        <code>[flags]</code> section with commented-out
+                        defaults.
+                    </p>
+                    <p>
+                        The original <code>.claude-setup.rc</code> is NOT
+                        deleted — both files can coexist.
                     </p>
 
-                    <h3>Zero-install (recommended)</h3>
-                    <pre><code># Python (pipx)
-pipx run claude-primer
+                    <h2>--init</h2>
+                    <p>
+                        Interactively create a
+                        <code>.claude-primer.toml</code> config file.
+                    </p>
+                    <pre><code>claude-primer --init
+claude-primer --init --yes  # non-interactive with defaults</code></pre>
+                    <p>
+                        In interactive mode, asks 5 questions: force mode,
+                        include README, clean root, git mode, target agents.
+                        In <code>--yes</code> mode, writes sensible defaults
+                        (all false, git_mode="ask").
+                    </p>
 
-# Python (uvx)
-uvx claude-primer
-
-# Node.js
-npx claude-primer</code></pre>
-
-                    <h3>Standalone binary</h3>
-                    <pre><code># Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.sh | bash
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.ps1 | iex</code></pre>
-
-                    <h3>Package managers</h3>
-                    <pre><code># macOS
-brew install limaronaldo/tap/claude-primer
-
-# Windows (Scoop)
-scoop bucket add limaronaldo https://github.com/limaronaldo/scoop-bucket
-scoop install claude-primer
-
-# pip (global install)
-pip install claude-primer</code></pre>
-
-                    <h3>Docker</h3>
-                    <pre><code>docker run --rm -v "$(pwd):/project" ghcr.io/limaronaldo/claude-primer</code></pre>
-
-                    <h2>Basic Usage</h2>
-                    <pre><code># Interactive setup in current directory
-claude-primer
-
-# Specific directory, non-interactive
-claude-primer /path/to/project --yes
-
-# Preview without writing
-claude-primer --dry-run
-
-# Overwrite existing files (skip unchanged)
-claude-primer --force --yes
-
-# Output project analysis as JSON
-claude-primer --plan-json</code></pre>
-
-                    <h2>What Happens</h2>
-                    <ol>
-                        <li>
-                            <strong>Scan</strong> &mdash; Detects languages,
-                            frameworks, deploy targets, and monorepo structure
-                        </li>
-                        <li>
-                            <strong>Git safety</strong> &mdash; Checks for
-                            uncommitted changes (configurable via
-                            <code>--git-mode</code>)
-                        </li>
-                        <li>
-                            <strong>Generate</strong> &mdash; Creates CLAUDE.md,
-                            STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md
-                        </li>
-                        <li>
-                            <strong>Verify</strong> &mdash; Confirms all files
-                            were written correctly
-                        </li>
-                    </ol>
-
-                    <h2>Next Steps</h2>
-                    <ul>
-                        <li>
-                            <a href="/claude-primer/guides/templates.html"
-                                >Customize output with templates</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/watch-mode.html"
-                                >Auto-regenerate with watch mode</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/multi-agent.html"
-                                >Generate context for other AI tools</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/plugins.html"
-                                >Extend with custom plugins</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/cli-reference.html"
-                                >Full CLI reference</a
-                            >
-                        </li>
-                    </ul>
+                    <h2>--update</h2>
+                    <p>
+                        Self-update the compiled binary from GitHub releases.
+                    </p>
+                    <pre><code>claude-primer --update</code></pre>
+                    <p>
+                        Only works for compiled binaries (PyInstaller builds).
+                        When running from source, suggests
+                        <code>pip install --upgrade claude-primer</code> or
+                        <code>npm install -g claude-primer@latest</code>
+                        instead.
+                    </p>
+                    <p>
+                        Downloads the platform-appropriate binary, verifies
+                        SHA256 checksum, backs up the current binary, and
+                        replaces it. Restores from backup on failure.
+                    </p>
                 </section>
             </main>
             <footer class="site-footer">

@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Getting Started — Claude Primer</title>
+        <title>VS Code Extension — Claude Primer</title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
@@ -61,107 +61,105 @@
             </nav>
             <main class="main-content">
                 <section class="features-section" style="margin-top: 2rem">
-                    <h1>Getting Started</h1>
-
-                    <h2>Installation</h2>
+                    <h1>VS Code Extension</h1>
                     <p>
-                        Choose the method that works best for your environment:
+                        The Claude Primer VS Code extension brings knowledge
+                        architecture generation directly into your editor.
                     </p>
 
-                    <h3>Zero-install (recommended)</h3>
-                    <pre><code># Python (pipx)
-pipx run claude-primer
+                    <h2>Installation</h2>
+                    <pre><code># From VS Code Marketplace (coming soon)
+code --install-extension limaronaldo.claude-primer
 
-# Python (uvx)
-uvx claude-primer
+# Or from source
+cd vscode/ && vsce package && code --install-extension claude-primer-*.vsix</code></pre>
+                    <p>
+                        Requires the <code>claude-primer</code> CLI to be
+                        installed and available on your PATH (or via npx/pipx).
+                    </p>
 
-# Node.js
-npx claude-primer</code></pre>
+                    <h2>Commands</h2>
+                    <p>
+                        All commands are available via the Command Palette
+                        (Cmd+Shift+P / Ctrl+Shift+P):
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Command</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Claude Primer: Generate</td>
+                                <td>
+                                    Run full generation with
+                                    <code>--yes --git-mode skip</code>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Claude Primer: Dry Run</td>
+                                <td>
+                                    Preview what would be generated without
+                                    writing files
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Claude Primer: Show Diff</td>
+                                <td>
+                                    Show unified diff of changes, opens as a
+                                    <code>.diff</code> file
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Claude Primer: Init Config</td>
+                                <td>
+                                    Create <code>.claude-primer.toml</code> via
+                                    guided prompts (no terminal needed)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Claude Primer: Plan JSON</td>
+                                <td>
+                                    View project analysis in a webview panel
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
 
-                    <h3>Standalone binary</h3>
-                    <pre><code># Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.sh | bash
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/limaronaldo/claude-primer/main/install.ps1 | iex</code></pre>
-
-                    <h3>Package managers</h3>
-                    <pre><code># macOS
-brew install limaronaldo/tap/claude-primer
-
-# Windows (Scoop)
-scoop bucket add limaronaldo https://github.com/limaronaldo/scoop-bucket
-scoop install claude-primer
-
-# pip (global install)
-pip install claude-primer</code></pre>
-
-                    <h3>Docker</h3>
-                    <pre><code>docker run --rm -v "$(pwd):/project" ghcr.io/limaronaldo/claude-primer</code></pre>
-
-                    <h2>Basic Usage</h2>
-                    <pre><code># Interactive setup in current directory
-claude-primer
-
-# Specific directory, non-interactive
-claude-primer /path/to/project --yes
-
-# Preview without writing
-claude-primer --dry-run
-
-# Overwrite existing files (skip unchanged)
-claude-primer --force --yes
-
-# Output project analysis as JSON
-claude-primer --plan-json</code></pre>
-
-                    <h2>What Happens</h2>
+                    <h2>Binary Resolution</h2>
+                    <p>
+                        The extension finds <code>claude-primer</code>
+                        automatically:
+                    </p>
                     <ol>
                         <li>
-                            <strong>Scan</strong> &mdash; Detects languages,
-                            frameworks, deploy targets, and monorepo structure
+                            Checks PATH for <code>claude-primer</code>
                         </li>
                         <li>
-                            <strong>Git safety</strong> &mdash; Checks for
-                            uncommitted changes (configurable via
-                            <code>--git-mode</code>)
+                            Falls back to
+                            <code>npx --yes claude-primer</code>
                         </li>
                         <li>
-                            <strong>Generate</strong> &mdash; Creates CLAUDE.md,
-                            STANDARDS.md, QUICKSTART.md, ERRORS_AND_LESSONS.md
-                        </li>
-                        <li>
-                            <strong>Verify</strong> &mdash; Confirms all files
-                            were written correctly
+                            Falls back to
+                            <code>pipx run claude-primer</code>
                         </li>
                     </ol>
 
-                    <h2>Next Steps</h2>
+                    <h2>Output</h2>
                     <ul>
                         <li>
-                            <a href="/claude-primer/guides/templates.html"
-                                >Customize output with templates</a
-                            >
+                            Generate and Dry Run stream output to the
+                            "Claude Primer" output channel
                         </li>
                         <li>
-                            <a href="/claude-primer/guides/watch-mode.html"
-                                >Auto-regenerate with watch mode</a
-                            >
+                            Show Diff opens a syntax-highlighted
+                            <code>.diff</code> file
                         </li>
                         <li>
-                            <a href="/claude-primer/guides/multi-agent.html"
-                                >Generate context for other AI tools</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/plugins.html"
-                                >Extend with custom plugins</a
-                            >
-                        </li>
-                        <li>
-                            <a href="/claude-primer/guides/cli-reference.html"
-                                >Full CLI reference</a
-                            >
+                            Plan JSON renders a formatted webview with project
+                            metadata
                         </li>
                     </ul>
                 </section>
