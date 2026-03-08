@@ -41,5 +41,13 @@ include = ["claude_primer.py", "README.md", "LICENSE"]
 [tool.hatch.build.targets.wheel]
 only-include = ["claude_primer.py"]
 
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]  # line length handled by formatter
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
