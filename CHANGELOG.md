@@ -2,6 +2,14 @@
 
 All notable changes to claude-primer are documented here.
 
+## [1.5.1] — 2026-03-08
+
+### Fixed
+- `--watch-auto` no longer loops infinitely on its own generated files (re-snapshots mtimes after `run()`)
+- Watch mode now passes `--agent`, `--format`, and `--plugin-dir` through to auto-regeneration
+- Telemetry payload now includes real project metadata (stacks, frameworks, tier) instead of empty values
+- E2E idempotency test checks for SKIP output instead of hash comparison (CLAUDE.md is self-referential)
+
 ## [1.5.0] — 2026-03-07
 
 ### Added
