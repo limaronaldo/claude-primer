@@ -1842,6 +1842,53 @@ def generate_claude_md(info: dict) -> str:
             "",
         ])
 
+    # AI-Assisted Development
+    tier_num = info.get("tier", {}).get("tier", 3)
+    L.extend([
+        "---", "", "## AI-Assisted Development", "",
+        "### Model Routing", "",
+        "- **Haiku** (cheap): CRUD, boilerplate, migrations, config, docs, formatting",
+        "- **Sonnet** (mid): Features, refactoring, integration, code review, tests",
+        "- **Opus** (expensive): Architecture, security logic, concurrency, novel algorithms", "",
+        "### Cost Discipline", "",
+        "- Target: 40-50% Haiku, 40-45% Sonnet, 5-15% Opus",
+        "- Never use Opus for: CRUD, boilerplate, formatting, imports, docs",
+        "- Escalation: haiku → sonnet → opus (only on failure)", "",
+        "### When to Decompose", "",
+        "- Feature spans 3+ files → decompose into task DAG",
+        "- Multiple independent concerns → parallelize with worktrees",
+        "- Simple 1-2 file change → implement directly", "",
+    ])
+
+    # Build verification pipeline from detected commands
+    _vp_cmds = []
+    scripts = info.get("scripts", {})
+    if "python" in info["stacks"]:
+        _vp_cmds = [("type-check", "python -m mypy ."), ("test", "python -m pytest"),
+                     ("lint", "python -m ruff check ."), ("format", "python -m ruff format --check .")]
+    elif "node" in info["stacks"]:
+        _vp_cmds = [("type-check", "tsc --noEmit"), ("test", "npm test"),
+                     ("lint", "npx eslint ."), ("format", "npx prettier --check .")]
+    elif "rust" in info["stacks"]:
+        _vp_cmds = [("type-check", "cargo check"), ("test", "cargo test"),
+                     ("lint", "cargo clippy"), ("format", "cargo fmt --check")]
+    elif "go" in info["stacks"]:
+        _vp_cmds = [("type-check", "go vet ./..."), ("test", "go test ./..."),
+                     ("lint", "golangci-lint run"), ("format", "gofmt -l .")]
+    elif "elixir" in info["stacks"]:
+        _vp_cmds = [("test", "mix test"), ("lint", "mix credo"), ("format", "mix format --check-formatted")]
+
+    if _vp_cmds:
+        L.extend(["### Verification Pipeline", ""])
+        L.extend(["Run in this order (stop at first failure):", ""])
+        L.append("```bash")
+        for label, cmd in _vp_cmds:
+            L.append(f"{cmd:<40s} # {label}")
+        L.extend(["```", ""])
+    else:
+        L.extend(["### Verification Pipeline", "",
+                   "Run in order: type-check → test → lint → format", ""])
+
     # Provenance summary
     if sources:
         L.extend(["---", "", "## Provenance", "",
@@ -2105,6 +2152,26 @@ def generate_standards_md(info: dict) -> str:
         "", "---", "",
     ])
 
+    # Verification Strategy (AI self-correction layers, tier-adjusted)
+    L.extend([
+        "## Verification Strategy", "",
+        "### Self-Correction Layers (Tier-Adjusted)", "",
+        "| Layer | T1 | T2 | T3 | T4 | Description |",
+        "|-------|----|----|----|----|-------------|",
+        "| 1. Self-Review | Yes | Yes | Yes | Yes | Agent checks own work before reporting done |",
+        "| 2. Automated Verification | Yes | Yes | Yes | Yes | Run type-check → tests → lint → format |",
+        "| 3. Peer Review | Yes | Yes | Yes | — | Cross-agent code review for design issues |",
+        "| 4. Model Escalation | Yes | Yes | — | — | On 2 failures: haiku → sonnet → opus |",
+        "| 5. Exploration | Yes | — | — | — | 3 parallel approaches as last resort |",
+        "",
+    ])
+    _esc_budget = {1: 3, 2: 3, 3: 2, 4: 1}.get(tier_num, 2)
+    _layers = {1: 5, 2: 4, 3: 3, 4: 2}.get(tier_num, 3)
+    L.extend([
+        f"**This project (T{tier_num}):** {_layers} active layers, escalation budget: {_esc_budget}",
+        "", "---", "",
+    ])
+
     # Naming Conventions
     L.extend(["## 4. Naming Conventions", ""])
     if "python" in info["stacks"]:
@@ -2312,6 +2379,96 @@ def generate_readme_md(info: dict) -> str:
     ])
 
     return "\n".join(L) + "\n"
+
+
+# ─────────────────────────────────────────────
+# MAO integration — machine-readable project config
+# ─────────────────────────────────────────────
+
+def generate_project_config_json(info: dict) -> str:
+    """Generate .claude/project-config.json for downstream AI tools (MAO, etc.)."""
+    tier = info.get("tier", {})
+    tier_num = tier.get("tier", 3)
+    scripts = info.get("scripts", {})
+
+    # Map detected commands to semantic keys
+    commands = {}
+    # Install
+    if "python" in info["stacks"]:
+        root = Path(info["root"])
+        if (root / "requirements.txt").exists():
+            commands["install"] = "pip install -r requirements.txt"
+        elif (root / "pyproject.toml").exists():
+            commands["install"] = "pip install -e ."
+    elif "node" in info["stacks"]:
+        commands["install"] = "npm install"
+    elif "rust" in info["stacks"]:
+        commands["install"] = "cargo build"
+    elif "go" in info["stacks"]:
+        commands["install"] = "go mod download"
+
+    # From package.json scripts
+    for key in ("dev", "start", "build"):
+        if key in scripts:
+            commands[key] = f"npm run {key}"
+
+    # Verification commands by stack
+    if "python" in info["stacks"]:
+        commands.setdefault("test", "python -m pytest")
+        commands.setdefault("lint", "python -m ruff check .")
+        commands.setdefault("type_check", "python -m mypy .")
+        commands.setdefault("format", "python -m ruff format --check .")
+    elif "node" in info["stacks"]:
+        if "test" in scripts:
+            commands.setdefault("test", "npm test")
+        if "lint" in scripts:
+            commands.setdefault("lint", "npm run lint")
+        else:
+            commands.setdefault("lint", "npx eslint .")
+        commands.setdefault("type_check", "tsc --noEmit")
+        commands.setdefault("format", "npx prettier --check .")
+    elif "rust" in info["stacks"]:
+        commands.setdefault("test", "cargo test")
+        commands.setdefault("lint", "cargo clippy")
+        commands.setdefault("type_check", "cargo check")
+        commands.setdefault("format", "cargo fmt --check")
+    elif "go" in info["stacks"]:
+        commands.setdefault("test", "go test ./...")
+        commands.setdefault("lint", "golangci-lint run")
+        commands.setdefault("type_check", "go vet ./...")
+        commands.setdefault("format", "gofmt -l .")
+    elif "elixir" in info["stacks"]:
+        commands.setdefault("test", "mix test")
+        commands.setdefault("lint", "mix credo")
+        commands.setdefault("format", "mix format --check-formatted")
+
+    # Verification pipeline — ordered subset of commands that exist
+    pipeline = [k for k in ("type_check", "test", "lint", "format") if k in commands]
+
+    # Self-correction layers by tier
+    layers = {1: 5, 2: 4, 3: 3, 4: 2}.get(tier_num, 3)
+    esc_budget = {1: 3, 2: 3, 3: 2, 4: 1}.get(tier_num, 2)
+
+    config = {
+        "project": info.get("name", ""),
+        "tier": tier_num,
+        "tier_confidence": tier.get("confidence", "medium"),
+        "stacks": info.get("stacks", []),
+        "frameworks": info.get("frameworks", []),
+        "deploy": info.get("deploy", []),
+        "is_monorepo": info.get("is_monorepo", False),
+        "commands": commands,
+        "verification_pipeline": pipeline,
+        "model_routing": {
+            "haiku_tasks": ["migrations", "config", "boilerplate", "docs", "formatting"],
+            "sonnet_tasks": ["features", "refactoring", "integration", "tests"],
+            "opus_tasks": ["architecture", "security", "concurrency"],
+        },
+        "self_correction_layers": layers,
+        "escalation_budget": esc_budget,
+        "generated_by": f"claude-primer v{__version__}",
+    }
+    return json.dumps(config, indent=2) + "\n"
 
 
 # ─────────────────────────────────────────────
@@ -2811,7 +2968,7 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
         force_all: bool = False, from_doc: Optional[str] = None,
         clean_root: bool = False, template_dir: Optional[str] = None,
         agents: Optional[list] = None, output_format: str = "markdown",
-        plugin_dir: Optional[str] = None):
+        plugin_dir: Optional[str] = None, with_mao: bool = False):
 
     target = target.resolve()
 
@@ -3115,6 +3272,18 @@ def run(target: Path, dry_run: bool = False, force: bool = False,
     if agents:
         agent_actions = write_agent_files(target, info, agents, fmt=output_format, dry_run=dry_run)
         result.actions.extend(agent_actions)
+
+    # ── MAO project config ──
+    if with_mao:
+        mao_dir = target / ".claude"
+        mao_path = mao_dir / "project-config.json"
+        mao_content = generate_project_config_json(info)
+        if not dry_run:
+            mao_dir.mkdir(parents=True, exist_ok=True)
+            mao_path.write_text(mao_content, encoding="utf-8")
+        result.actions.append(FileAction(".claude/project-config.json",
+                                          "create" if not mao_path.exists() else "overwrite",
+                                          lines=mao_content.count("\n")))
 
     # ── Plugin extensions ──
     plugin_dir_path = Path(plugin_dir) if plugin_dir else target / ".claude-primer" / "plugins"
@@ -4281,6 +4450,8 @@ Examples:
                         help="Output format for agent context files (default: markdown)")
     parser.add_argument("--plugin-dir", type=str, default=None,
                         help="Directory containing plugin generators (default: .claude-primer/plugins/)")
+    parser.add_argument("--mao", action="store_true",
+                        help="Generate .claude/project-config.json for MAO (Multi-Agent Orchestrator)")
     parser.add_argument("--diff", action="store_true",
                         help="Show what would change without writing (unified diff)")
     parser.add_argument("--check", action="store_true",
@@ -4375,6 +4546,7 @@ Examples:
             agents=agents,
             output_format=args.format,
             plugin_dir=args.plugin_dir,
+            with_mao=args.mao,
         )
         return
 
@@ -4405,6 +4577,7 @@ Examples:
         agents=agents,
         output_format=args.format,
         plugin_dir=args.plugin_dir,
+        with_mao=args.mao,
     )
 
     _telemetry_info = scan_directory(Path(args.target).resolve()) if Path(args.target).exists() else {}

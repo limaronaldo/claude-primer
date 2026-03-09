@@ -1523,3 +1523,92 @@ class TestTomlConfig:
         # No TOML file — should work fine
         r = run_setup(str(tmp_path), "--yes", "--no-git-check")
         assert r.returncode == 0
+
+
+class TestAIAssistedDevelopment:
+    """Tests for the AI-Assisted Development section in CLAUDE.md."""
+
+    def test_claude_md_contains_ai_section(self, tmp_path):
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"name":"test","scripts":{"test":"jest","lint":"eslint ."}}')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        content = (tmp_path / "CLAUDE.md").read_text()
+        assert "## AI-Assisted Development" in content
+        assert "### Model Routing" in content
+        assert "### Cost Discipline" in content
+        assert "### When to Decompose" in content
+
+    def test_verification_pipeline_for_node(self, tmp_path):
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"name":"test","scripts":{"test":"jest"}}')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "CLAUDE.md").read_text()
+        assert "### Verification Pipeline" in content
+        assert "tsc --noEmit" in content or "type-check" in content
+
+    def test_verification_pipeline_for_python(self, tmp_path):
+        (tmp_path / "main.py").write_text("print('hello')")
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "CLAUDE.md").read_text()
+        assert "### Verification Pipeline" in content
+        assert "pytest" in content
+
+
+class TestVerificationStrategy:
+    """Tests for the verification strategy section in STANDARDS.md."""
+
+    def test_standards_contains_verification_strategy(self, tmp_path):
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"name":"test"}')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        content = (tmp_path / "STANDARDS.md").read_text()
+        assert "## Verification Strategy" in content
+        assert "Self-Correction Layers" in content
+        assert "Self-Review" in content
+        assert "Model Escalation" in content
+
+    def test_tier_adjusts_layers(self, tmp_path):
+        # Simple project (T4) — fewer layers
+        (tmp_path / "notes.txt").write_text("hello")
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        content = (tmp_path / "STANDARDS.md").read_text()
+        assert "2 active layers" in content or "T4" in content
+
+
+class TestMaoFlag:
+    """Tests for the --mao flag and project-config.json generation."""
+
+    def test_mao_generates_project_config(self, tmp_path):
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"name":"test-app","scripts":{"test":"jest","lint":"eslint .","build":"next build"}}')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check", "--mao")
+        assert r.returncode == 0
+        config_path = tmp_path / ".claude" / "project-config.json"
+        assert config_path.exists()
+        config = json.loads(config_path.read_text())
+        assert config["project"]  # non-empty project name
+        assert "node" in config["stacks"]
+        assert config["tier"] in (1, 2, 3, 4)
+        assert "commands" in config
+        assert "verification_pipeline" in config
+        assert "model_routing" in config
+        assert config["self_correction_layers"] >= 2
+
+    def test_mao_without_flag_no_config(self, tmp_path):
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"name":"test"}')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check")
+        assert r.returncode == 0
+        assert not (tmp_path / ".claude" / "project-config.json").exists()
+
+    def test_mao_config_has_commands(self, tmp_path):
+        (tmp_path / "main.py").write_text("print('hello')")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "myapp"\n')
+        r = run_setup(str(tmp_path), "--yes", "--no-git-check", "--mao")
+        assert r.returncode == 0
+        config = json.loads((tmp_path / ".claude" / "project-config.json").read_text())
+        assert "test" in config["commands"]
+        assert "lint" in config["commands"]
+        assert config["stacks"] == ["python"]

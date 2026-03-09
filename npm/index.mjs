@@ -1675,6 +1675,52 @@ function generateClaudeMd(info) {
     );
   }
 
+  // AI-Assisted Development
+  const _tierNum = (info.tier || {}).tier || 3;
+  L.push(
+    "---", "", "## AI-Assisted Development", "",
+    "### Model Routing", "",
+    "- **Haiku** (cheap): CRUD, boilerplate, migrations, config, docs, formatting",
+    "- **Sonnet** (mid): Features, refactoring, integration, code review, tests",
+    "- **Opus** (expensive): Architecture, security logic, concurrency, novel algorithms", "",
+    "### Cost Discipline", "",
+    "- Target: 40-50% Haiku, 40-45% Sonnet, 5-15% Opus",
+    "- Never use Opus for: CRUD, boilerplate, formatting, imports, docs",
+    "- Escalation: haiku → sonnet → opus (only on failure)", "",
+    "### When to Decompose", "",
+    "- Feature spans 3+ files → decompose into task DAG",
+    "- Multiple independent concerns → parallelize with worktrees",
+    "- Simple 1-2 file change → implement directly", "",
+  );
+
+  // Verification pipeline from detected stack
+  let _vpCmds = [];
+  if (info.stacks.includes("python")) {
+    _vpCmds = [["type-check", "python -m mypy ."], ["test", "python -m pytest"],
+                ["lint", "python -m ruff check ."], ["format", "python -m ruff format --check ."]];
+  } else if (info.stacks.includes("node")) {
+    _vpCmds = [["type-check", "tsc --noEmit"], ["test", "npm test"],
+                ["lint", "npx eslint ."], ["format", "npx prettier --check ."]];
+  } else if (info.stacks.includes("rust")) {
+    _vpCmds = [["type-check", "cargo check"], ["test", "cargo test"],
+                ["lint", "cargo clippy"], ["format", "cargo fmt --check"]];
+  } else if (info.stacks.includes("go")) {
+    _vpCmds = [["type-check", "go vet ./..."], ["test", "go test ./..."],
+                ["lint", "golangci-lint run"], ["format", "gofmt -l ."]];
+  } else if (info.stacks.includes("elixir")) {
+    _vpCmds = [["test", "mix test"], ["lint", "mix credo"], ["format", "mix format --check-formatted"]];
+  }
+
+  if (_vpCmds.length) {
+    L.push("### Verification Pipeline", "", "Run in this order (stop at first failure):", "", "```bash");
+    for (const [label, cmd] of _vpCmds) {
+      L.push(`${cmd.padEnd(40)} # ${label}`);
+    }
+    L.push("```", "");
+  } else {
+    L.push("### Verification Pipeline", "", "Run in order: type-check → test → lint → format", "");
+  }
+
   // Provenance
   if (sources.size) {
     L.push("---", "", "## Provenance", "",
@@ -1917,6 +1963,26 @@ function generateStandardsMd(info) {
     "", "---", "",
   );
 
+  // Verification Strategy (AI self-correction layers, tier-adjusted)
+  L.push(
+    "## Verification Strategy", "",
+    "### Self-Correction Layers (Tier-Adjusted)", "",
+    "| Layer | T1 | T2 | T3 | T4 | Description |",
+    "|-------|----|----|----|----|-------------|",
+    "| 1. Self-Review | Yes | Yes | Yes | Yes | Agent checks own work before reporting done |",
+    "| 2. Automated Verification | Yes | Yes | Yes | Yes | Run type-check → tests → lint → format |",
+    "| 3. Peer Review | Yes | Yes | Yes | — | Cross-agent code review for design issues |",
+    "| 4. Model Escalation | Yes | Yes | — | — | On 2 failures: haiku → sonnet → opus |",
+    "| 5. Exploration | Yes | — | — | — | 3 parallel approaches as last resort |",
+    "",
+  );
+  const _escBudget = { 1: 3, 2: 3, 3: 2, 4: 1 }[tierNum] || 2;
+  const _layers = { 1: 5, 2: 4, 3: 3, 4: 2 }[tierNum] || 3;
+  L.push(
+    `**This project (T${tierNum}):** ${_layers} active layers, escalation budget: ${_escBudget}`,
+    "", "---", "",
+  );
+
   // Naming Conventions
   L.push("## 4. Naming Conventions", "");
   if (info.stacks.includes("python")) L.push("### Python", "- Files: `snake_case.py`", "- Verb-first for scripts: `publish_`, `validate_`", "");
@@ -2110,6 +2176,88 @@ function generateReadmeMd(info) {
   );
 
   return L.join("\n") + "\n";
+}
+
+// ─────────────────────────────────────────────
+// MAO integration — machine-readable project config
+// ─────────────────────────────────────────────
+
+function generateProjectConfigJson(info) {
+  const tier = info.tier || {};
+  const tierNum = tier.tier || 3;
+  const scripts = info.scripts || {};
+  const commands = {};
+  const root = info.root;
+
+  // Install
+  if (info.stacks.includes("python")) {
+    if (fs.existsSync(path.join(root, "requirements.txt"))) commands.install = "pip install -r requirements.txt";
+    else if (fs.existsSync(path.join(root, "pyproject.toml"))) commands.install = "pip install -e .";
+  } else if (info.stacks.includes("node")) {
+    commands.install = "npm install";
+  } else if (info.stacks.includes("rust")) {
+    commands.install = "cargo build";
+  } else if (info.stacks.includes("go")) {
+    commands.install = "go mod download";
+  }
+
+  // From package.json scripts
+  for (const key of ["dev", "start", "build"]) {
+    if (scripts[key]) commands[key] = `npm run ${key}`;
+  }
+
+  // Verification commands by stack
+  if (info.stacks.includes("python")) {
+    if (!commands.test) commands.test = "python -m pytest";
+    if (!commands.lint) commands.lint = "python -m ruff check .";
+    if (!commands.type_check) commands.type_check = "python -m mypy .";
+    if (!commands.format) commands.format = "python -m ruff format --check .";
+  } else if (info.stacks.includes("node")) {
+    if (scripts.test && !commands.test) commands.test = "npm test";
+    if (scripts.lint) commands.lint = "npm run lint";
+    else if (!commands.lint) commands.lint = "npx eslint .";
+    if (!commands.type_check) commands.type_check = "tsc --noEmit";
+    if (!commands.format) commands.format = "npx prettier --check .";
+  } else if (info.stacks.includes("rust")) {
+    if (!commands.test) commands.test = "cargo test";
+    if (!commands.lint) commands.lint = "cargo clippy";
+    if (!commands.type_check) commands.type_check = "cargo check";
+    if (!commands.format) commands.format = "cargo fmt --check";
+  } else if (info.stacks.includes("go")) {
+    if (!commands.test) commands.test = "go test ./...";
+    if (!commands.lint) commands.lint = "golangci-lint run";
+    if (!commands.type_check) commands.type_check = "go vet ./...";
+    if (!commands.format) commands.format = "gofmt -l .";
+  } else if (info.stacks.includes("elixir")) {
+    if (!commands.test) commands.test = "mix test";
+    if (!commands.lint) commands.lint = "mix credo";
+    if (!commands.format) commands.format = "mix format --check-formatted";
+  }
+
+  const pipeline = ["type_check", "test", "lint", "format"].filter(k => commands[k]);
+  const layers = { 1: 5, 2: 4, 3: 3, 4: 2 }[tierNum] || 3;
+  const escBudget = { 1: 3, 2: 3, 3: 2, 4: 1 }[tierNum] || 2;
+
+  const config = {
+    project: info.name || "",
+    tier: tierNum,
+    tier_confidence: tier.confidence || "medium",
+    stacks: info.stacks || [],
+    frameworks: info.frameworks || [],
+    deploy: info.deploy || [],
+    is_monorepo: info.isMonorepo || false,
+    commands,
+    verification_pipeline: pipeline,
+    model_routing: {
+      haiku_tasks: ["migrations", "config", "boilerplate", "docs", "formatting"],
+      sonnet_tasks: ["features", "refactoring", "integration", "tests"],
+      opus_tasks: ["architecture", "security", "concurrency"],
+    },
+    self_correction_layers: layers,
+    escalation_budget: escBudget,
+    generated_by: `claude-primer v${VERSION}`,
+  };
+  return JSON.stringify(config, null, 2) + "\n";
 }
 
 // ─────────────────────────────────────────────
@@ -2852,6 +3000,20 @@ async function run(target, opts = {}) {
     result.actions.push(...agentActions);
   }
 
+  // MAO project config
+  if (opts.mao) {
+    const configJson = generateProjectConfigJson(info);
+    const configPath = path.join(target, ".claude", "project-config.json");
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, configJson, "utf-8");
+      result.actions.push({ filename: ".claude/project-config.json", action: "create" });
+      console.log("  Generated .claude/project-config.json (MAO config)");
+    } else {
+      result.actions.push({ filename: ".claude/project-config.json", action: "create (dry-run)" });
+    }
+  }
+
   // Plugin extensions
   const pluginDirPath = opts.pluginDir || path.join(target, ".claude-primer", "plugins");
   const plugins = await loadPlugins(pluginDirPath);
@@ -3429,6 +3591,7 @@ function parseArgs(argv) {
     yes: false,
     withReadme: false,
     withRalph: false,
+    mao: false,
     noGitCheck: false,
     planJsonFlag: false,
     reconfigure: false,
@@ -3460,6 +3623,7 @@ function parseArgs(argv) {
       case "--yes": case "-y": args.yes = true; break;
       case "--with-readme": args.withReadme = true; break;
       case "--with-ralph": args.withRalph = true; break;
+      case "--mao": args.mao = true; break;
       case "--no-git-check": args.noGitCheck = true; break;
       case "--plan-json": args.planJsonFlag = true; break;
       case "--reconfigure": args.reconfigure = true; break;
@@ -3536,6 +3700,7 @@ Usage:
   claude-primer --watch-auto               # auto-regenerate on change
   claude-primer --agent <agents>           # target: claude,cursor,copilot,windsurf,aider,codex,all
   claude-primer --format markdown|yaml|json # output format for agent files
+  claude-primer --mao                       # generate .claude/project-config.json for MAO
   claude-primer --plugin-dir <dir>         # plugin generators directory
   claude-primer --diff                      # show what would change (unified diff)
   claude-primer --check                     # check if docs are up-to-date (CI-friendly)
@@ -3571,6 +3736,7 @@ function collectTelemetry(args, info, durationMs) {
   if (args.forceAll) flags.push("force-all");
   if (args.withReadme) flags.push("with-readme");
   if (args.withRalph) flags.push("with-ralph");
+  if (args.mao) flags.push("mao");
   if (args.noGitCheck) flags.push("no-git-check");
   if (args.planJsonFlag) flags.push("plan-json");
   if (args.reconfigure) flags.push("reconfigure");
@@ -4156,7 +4322,7 @@ function _applyTomlConfig(args, config) {
   const flags = config.flags || {};
   const boolMap = {
     force: "force", force_all: "forceAll", dry_run: "dryRun",
-    with_readme: "withReadme", with_ralph: "withRalph",
+    with_readme: "withReadme", with_ralph: "withRalph", mao: "mao",
     no_git_check: "noGitCheck", clean_root: "cleanRoot",
     watch: "watch", watch_auto: "watchAuto",
   };
@@ -4256,6 +4422,7 @@ async function main() {
       agents,
       outputFormat: args.format,
       pluginDir: args.pluginDir,
+      mao: args.mao,
     });
     return;
   }
@@ -4286,6 +4453,7 @@ async function main() {
     agents,
     outputFormat: args.format,
     pluginDir: args.pluginDir,
+    mao: args.mao,
   });
 
   const _telemetryInfo = fs.existsSync(path.resolve(args.target)) ? scanDirectory(path.resolve(args.target)) : {};
