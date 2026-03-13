@@ -1,3 +1,11 @@
+> **⚠️ This repository has moved to [limaronaldo/claude-toolkit](https://github.com/limaronaldo/claude-toolkit)**
+>
+> Claude Primer is now part of the `claude-toolkit` monorepo at `packages/claude-primer/`.
+> This repo is archived and will no longer receive updates.
+> All new issues and PRs should be filed at the new repository.
+
+---
+
 # Claude Primer
 
 [![PyPI](https://img.shields.io/pypi/v/claude-primer)](https://pypi.org/project/claude-primer/)
